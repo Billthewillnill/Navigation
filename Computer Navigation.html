@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Quick Launcher</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        *:focus, *:focus-visible {
+            outline: none !important;
+            box-shadow: none !important;
+        }
+        body {
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen p-4 sm:p-8 flex flex-col">
+
+    <div class="max-w-5xl mx-auto space-y-5 w-full">
+        
+        <!-- Navigation Bar & Controls -->
+        <div id="navBar" class="flex flex-wrap items-center justify-between gap-3 bg-slate-800/40 border border-slate-800 p-3 rounded-xl">
+            <!-- Breadcrumbs -->
+            <div id="breadcrumbs" class="flex items-center gap-1.5 text-sm text-slate-300 overflow-x-auto py-1 flex-1">
+                <!-- Dynamically filled -->
+            </div>
+
+            <!-- View Toggles & Save Data Button -->
+            <div class="flex items-center gap-2">
+                <button id="viewToggleBtn" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg border border-slate-700 font-medium transition-colors">
+                    📁 Folder View
+                </button>
+                <button id="toggleDataBtn" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg transition-colors border border-slate-700 font-medium flex items-center gap-1.5">
+                    <span>✏️</span> Toggle Save Data
+                </button>
+            </div>
+        </div>
+
+        <!-- Search Section -->
+        <div id="searchContainer" class="relative">
+            <div class="relative flex items-center">
+                <input 
+                    type="text" 
+                    id="searchInput" 
+                    placeholder="Search by tag (prioritized), title... (Press Enter to open)" 
+                    class="w-full bg-slate-800/90 border-2 border-indigo-500/30 focus:border-indigo-500 rounded-xl px-4 py-3.5 pl-11 pr-28 text-white placeholder-slate-400 transition-all text-base shadow-lg"
+                    autofocus
+                >
+                <span class="absolute left-4 text-slate-400 text-lg">🔍</span>
+                <div class="absolute right-3 flex items-center gap-2">
+                    <span id="matchBadge" class="hidden bg-indigo-600/30 text-indigo-300 border border-indigo-500/40 text-xs px-2.5 py-1 rounded-md font-medium">
+                        Press ↵ to Launch
+                    </span>
+                    <button id="exitFocusBtn" title="Click Tab to toggle Focus Mode" class="p-1.5 text-slate-400 hover:text-white hover:bg-slate-700/60 rounded-lg transition-colors text-sm flex items-center justify-center">
+                        🎯
+                    </button>
+                </div>
+            </div>
+
+            <!-- Grid container for results -->
+            <div id="buttonsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-3">
+                <!-- Dynamically generated items -->
+            </div>
+        </div>
+
+        <!-- Generated Content Area -->
+        <div class="space-y-3">
+            <div id="sectionHeader" class="flex items-center justify-between">
+                <h2 id="sectionTitle" class="text-xs font-semibold uppercase tracking-wider text-slate-400">Available Menus</h2>
+                <span id="itemCounter" class="text-xs text-slate-500 font-mono"></span>
+            </div>
+
+            <div id="treeContainer" class="hidden space-y-2 bg-slate-800/30 border border-slate-800 p-4 rounded-xl">
+                <!-- Full hierarchy tree -->
+            </div>
+
+            <div id="noResults" class="hidden text-center py-12 text-slate-500 bg-slate-800/20 rounded-xl border border-dashed border-slate-800">
+                <p class="text-base font-medium">No matching items found</p>
+                <p class="text-xs mt-1 text-slate-600">Try searching for a different tag or title</p>
+            </div>
+        </div>
+
+        <!-- Save Data Section -->
+        <div id="dataSection" class="hidden bg-slate-800/60 border border-slate-700/60 rounded-xl p-4 space-y-2 mt-8">
+            <div class="flex items-center justify-between">
+                <label for="dataInput" class="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    Save Data (Format: <code class="text-indigo-300 bg-slate-900 px-1.5 py-0.5 rounded">(level){"Title", "Description", "Tag", "Link"}</code>)
+                </label>
+                <span id="statusIndicator" class="text-xs text-emerald-400 opacity-0 transition-opacity">Saved ✓</span>
+            </div>
+            <textarea 
+                id="dataInput" 
+                rows="8" 
+                class="w-full bg-slate-900 border border-slate-700 rounded-lg p-3 text-slate-200 font-mono text-sm leading-relaxed resize-y focus:border-indigo-500 transition-colors"
+            ></textarea>
+            <p class="text-xs text-slate-400">
+                Prefix lines with <code class="text-indigo-300 bg-slate-900 px-1 font-mono">(0)</code>, <code class="text-indigo-300 bg-slate-900 px-1 font-mono">(1)</code>, <code class="text-indigo-300 bg-slate-900 px-1 font-mono">(2)</code> to create nested sub-menus. Search automatically prioritizes exact and partial tag matches first!
+            </p>
+        </div>
+
+    </div>
+
+    <script>
+        // Sample data demonstrating nested menus, now including a local file example
+        const defaultSaveData = `(0){"Local Files", "Files stored on this computer", "local", ""}
+(1){"Computer Navigation", "Local AI canvas folder", "nav", "file:///C:/Users/super/Team%20KermitTF%20Dropbox/Super%20Herbie/IMPORTANT%20Computer%20Files%20I%20Want%20On%20Both%20Computers/For%20My%20PC/--%20AI%20Canvas%20--%20-/Computer%20Navigation/Computer%20Navigation.html"}
+(0){"Developer Tools", "Coding platforms, version control, and documentation", "dev", "https://github.com/developer-notes"}
+(1){"GitHub", "Code Repository & Version Control", "code", "https://github.com"}
+(0){"Search & Knowledge", "General web search engines and knowledge bases", "search", "https://google.com"}
+(1){"Google", "World search engine", "search", "https://google.com"}`;
+
+        // DOM Elements
+        const searchInput = document.getElementById('searchInput');
+        const dataInput = document.getElementById('dataInput');
+        const buttonsGrid = document.getElementById('buttonsGrid');
+        const treeContainer = document.getElementById('treeContainer');
+        const noResults = document.getElementById('noResults');
+        const toggleDataBtn = document.getElementById('toggleDataBtn');
+        const dataSection = document.getElementById('dataSection');
+        const matchBadge = document.getElementById('matchBadge');
+        const statusIndicator = document.getElementById('statusIndicator');
+        const breadcrumbs = document.getElementById('breadcrumbs');
+        const sectionTitle = document.getElementById('sectionTitle');
+        const sectionHeader = document.getElementById('sectionHeader');
+        const itemCounter = document.getElementById('itemCounter');
+        const viewToggleBtn = document.getElementById('viewToggleBtn');
+        const navBar = document.getElementById('navBar');
+        const exitFocusBtn = document.getElementById('exitFocusBtn');
+        const searchContainer = document.getElementById('searchContainer');
+        const mainWrapper = document.querySelector('.max-w-5xl');
+
+        // Application State
+        let rootNodes = [];
+        let flatItems = [];
+        let currentPath = [];
+        let currentView = 'grid';
+        let activeFilteredResults = [];
+        let justOpenedFolderByEnter = false;
+        let isFocusMode = localStorage.getItem('quick_launcher_focus_mode') === 'true';
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function getFolderPath(node) {
+            const path = [];
+            let curr = node ? node.parent : null;
+            while (curr) {
+                path.unshift(curr);
+                curr = curr.parent;
+            }
+            return path;
+        }
+
+        // --- UPDATED LINK OPENER LOGIC ---
+        function openLink(url) {
+            if (!url) return;
+            let formattedUrl = url.trim();
+            
+            // Allow file:///, mailto:, vscode:, etc. If it lacks a standard protocol, assume https://
+            if (!/^(https?|file|mailto|tel|vscode):/i.test(formattedUrl)) {
+                formattedUrl = 'https://' + formattedUrl;
+            }
+            
+            // Create a temporary anchor element to trigger the navigation.
+            // This method is generally more reliable for local file:/// links than window.open
+            const link = document.createElement('a');
+            link.href = formattedUrl;
+            link.target = '_blank';
+            link.rel = 'noopener noreferrer';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+        // ---------------------------------
+
+        function parseSaveData(rawText) {
+            const lines = rawText.split('\n');
+            const items = [];
+
+            lines.forEach((line, index) => {
+                const trimmed = line.trim();
+                if (!trimmed) return;
+
+                const regex = /^(?:\((\d+)\))?\s*\{?\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*,\s*"([^"]*)"\s*\}?/;
+                const match = trimmed.match(regex);
+
+                if (match) {
+                    const depth = match[1] !== undefined ? parseInt(match[1], 10) : 0;
+                    items.push({
+                        id: index,
+                        depth: depth,
+                        title: match[2],
+                        description: match[3],
+                        tag: match[4],
+                        link: match[5],
+                        children: [],
+                        parent: null,
+                        path: []
+                    });
+                }
+            });
+
+            return buildTree(items);
+        }
+
+        function buildTree(items) {
+            const roots = [];
+            const stack = [];
+
+            items.forEach(item => {
+                const depth = item.depth;
+                while (stack.length > depth) stack.pop();
+
+                if (depth === 0 || stack.length === 0) {
+                    item.parent = null;
+                    item.path = [item.title];
+                    roots.push(item);
+                } else {
+                    const parent = stack[stack.length - 1];
+                    item.parent = parent;
+                    item.path = [...parent.path, item.title];
+                    parent.children.push(item);
+                }
+                stack[depth] = item;
+            });
+
+            return { roots, items };
+        }
+
+        function calculateSearchScore(item, query) {
+            const q = query.toLowerCase();
+            const tag = (item.tag || '').toLowerCase();
+            const title = (item.title || '').toLowerCase();
+            const desc = (item.description || '').toLowerCase();
+
+            if (tag === q) return 1000;
+            if (tag.startsWith(q)) return 900 - (tag.length - q.length);
+            if (tag.includes(q)) return 800;
+
+            if (title === q) return 500;
+            if (title.startsWith(q)) return 400;
+            if (title.includes(q)) return 300;
+            if (desc.includes(q)) return 100;
+
+            return 0;
+        }
+
+        function getContextItems() {
+            if (isFocusMode) return flatItems.filter(item => item.link && item.link.trim().length > 0);
+            if (currentPath.length === 0) return flatItems;
+            
+            const currentFolder = currentPath[currentPath.length - 1];
+            const descendants = [];
+            function collect(node) {
+                node.children.forEach(child => {
+                    descendants.push(child);
+                    collect(child);
+                });
+            }
+            collect(currentFolder);
+            return descendants;
+        }
+
+        function getFirstLinkInFolder(folderNode) {
+            if (folderNode.link && folderNode.link.trim().length > 0) return folderNode.link;
+            for (const child of folderNode.children) {
+                const found = getFirstLinkInFolder(child);
+                if (found) return found;
+            }
+            return null;
+        }
+
+        function render() {
+            if (isFocusMode) {
+                navBar.classList.add('hidden');
+                if (sectionHeader) sectionHeader.classList.add('hidden');
+                dataSection.classList.add('hidden');
+                buttonsGrid.className = 'absolute top-full left-0 right-0 mt-2 flex flex-col gap-2 z-50 shadow-2xl bg-slate-900/95 backdrop-blur border border-slate-700/80 p-2.5 rounded-xl';
+                if (mainWrapper) mainWrapper.className = 'max-w-2xl w-full mx-auto my-auto relative';
+            } else {
+                navBar.classList.remove('hidden');
+                if (sectionHeader) sectionHeader.classList.remove('hidden');
+                buttonsGrid.className = 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mt-3 static bg-transparent border-none p-0 shadow-none';
+                if (mainWrapper) mainWrapper.className = 'max-w-5xl w-full mx-auto space-y-5 my-0';
+            }
+
+            const query = searchInput.value.toLowerCase().trim();
+
+            if (isFocusMode && query.length === 0) {
+                buttonsGrid.classList.add('hidden');
+                treeContainer.classList.add('hidden');
+                noResults.classList.add('hidden');
+                matchBadge.classList.add('hidden');
+                activeFilteredResults = [];
+            } else if (query.length > 0) {
+                renderSearchResults(query);
+            } else if (currentView === 'tree' && !isFocusMode) {
+                renderTreeView();
+            } else {
+                renderFolderView();
+            }
+
+            renderBreadcrumbs();
+            updateMatchBadge(query);
+            updateViewToggleBtn();
+        }
+
+        function renderSearchResults(query) {
+            buttonsGrid.classList.remove('hidden');
+            treeContainer.classList.add('hidden');
+
+            const contextPool = getContextItems();
+            const scored = contextPool.map(item => ({ item, score: calculateSearchScore(item, query) })).filter(entry => entry.score > 0);
+            scored.sort((a, b) => b.score - a.score);
+            let results = scored.map(entry => entry.item);
+
+            if (isFocusMode) results = results.slice(0, 3);
+            activeFilteredResults = results;
+            buttonsGrid.innerHTML = '';
+
+            if (activeFilteredResults.length === 0) {
+                if (isFocusMode) {
+                    buttonsGrid.classList.remove('hidden');
+                    buttonsGrid.innerHTML = `<div class="p-3 text-center text-slate-400 text-sm font-medium">No matching items found</div>`;
+                    noResults.classList.add('hidden');
+                } else {
+                    noResults.classList.remove('hidden');
+                }
+                if (itemCounter) itemCounter.textContent = '0 items found';
+            } else {
+                noResults.classList.add('hidden');
+                if (itemCounter) itemCounter.textContent = `${activeFilteredResults.length} item(s) found`;
+                activeFilteredResults.forEach((item, index) => {
+                    buttonsGrid.appendChild(createCardElement(item, index === 0, true));
+                });
+            }
+
+            if (sectionTitle) {
+                const scopeName = (currentPath.length > 0 && !isFocusMode) ? ` inside "${currentPath[currentPath.length - 1].title}"` : '';
+                sectionTitle.textContent = `Search Results for "${query}"${scopeName}`;
+            }
+        }
+
+        function renderFolderView() {
+            buttonsGrid.classList.remove('hidden');
+            treeContainer.classList.add('hidden');
+
+            let currentLevelItems = [];
+            if (currentPath.length === 0) {
+                currentLevelItems = rootNodes;
+                if (sectionTitle) sectionTitle.textContent = "Root Menu";
+            } else {
+                const currentFolder = currentPath[currentPath.length - 1];
+                currentLevelItems = currentFolder.children;
+                if (sectionTitle) sectionTitle.textContent = `Menu: ${currentFolder.title}`;
+            }
+
+            activeFilteredResults = currentLevelItems;
+            buttonsGrid.innerHTML = '';
+
+            if (currentLevelItems.length === 0) {
+                noResults.classList.remove('hidden');
+                if (itemCounter) itemCounter.textContent = 'Empty folder';
+            } else {
+                noResults.classList.add('hidden');
+                if (itemCounter) itemCounter.textContent = `${currentLevelItems.length} item(s)`;
+                currentLevelItems.forEach((item, index) => {
+                    buttonsGrid.appendChild(createCardElement(item, index === 0 && justOpenedFolderByEnter, false));
+                });
+            }
+        }
+
+        function renderTreeView() {
+            buttonsGrid.classList.add('hidden');
+            treeContainer.classList.remove('hidden');
+            noResults.classList.add('hidden');
+            if (sectionTitle) sectionTitle.textContent = "Tree View";
+            if (itemCounter) itemCounter.textContent = `${flatItems.length} total item(s)`;
+
+            treeContainer.innerHTML = '';
+
+            function buildTreeNode(node, level = 0) {
+                const itemDiv = document.createElement('div');
+                itemDiv.className = `relative py-1`;
+                const content = document.createElement('div');
+                const hasChildren = node.children && node.children.length > 0;
+                const hasLink = node.link && node.link.trim().length > 0;
+
+                content.className = `flex items-center justify-between p-2.5 rounded-lg border bg-slate-800/80 border-slate-700/60 hover:border-indigo-500/50 hover:bg-slate-800 cursor-pointer transition-all ${
+                    hasChildren ? 'text-indigo-200' : 'text-slate-200'
+                }`;
+                content.innerHTML = `
+                    <div class="flex items-center gap-2 truncate">
+                        <span class="text-sm">${hasChildren ? '📁' : '🔗'}</span>
+                        <span class="font-medium text-sm truncate">${escapeHtml(node.title)}</span>
+                        ${node.tag ? `<span class="text-[10px] bg-slate-900 border border-slate-700 text-indigo-400 px-1.5 py-0.5 rounded font-mono">${escapeHtml(node.tag)}</span>` : ''}
+                    </div>
+                `;
+                content.addEventListener('click', () => {
+                    if (hasChildren) {
+                        currentPath = [...getFolderPath(node), node];
+                        currentView = 'grid';
+                        updateViewToggleBtn();
+                        render();
+                    } else if (hasLink) {
+                        openLink(node.link);
+                        searchInput.value = '';
+                        render();
+                    }
+                });
+
+                itemDiv.appendChild(content);
+
+                if (hasChildren) {
+                    const childContainer = document.createElement('div');
+                    childContainer.className = 'ml-4 pl-2 border-l border-slate-700/60 space-y-1 mt-1';
+                    node.children.forEach(child => childContainer.appendChild(buildTreeNode(child, level + 1)));
+                    itemDiv.appendChild(childContainer);
+                }
+                return itemDiv;
+            }
+
+            rootNodes.forEach(root => treeContainer.appendChild(buildTreeNode(root, 0)));
+        }
+
+        function updateMatchBadge(query) {
+            if (isFocusMode) {
+                if (query.length === 0 || activeFilteredResults.length === 0) {
+                    matchBadge.classList.add('hidden');
+                    return;
+                }
+                matchBadge.classList.remove('hidden');
+                matchBadge.textContent = `Press ↵ to Launch "${activeFilteredResults[0].title}"`;
+                return;
+            }
+
+            if (query.length === 0) {
+                if (currentPath.length > 0) {
+                    matchBadge.classList.remove('hidden');
+                    matchBadge.textContent = `Press ↵ to Open Folder "${currentPath[currentPath.length - 1].title}"`;
+                } else {
+                    matchBadge.classList.add('hidden');
+                }
+                return;
+            }
+
+            if (activeFilteredResults.length === 0) {
+                matchBadge.classList.add('hidden');
+                return;
+            }
+
+            const topMatch = activeFilteredResults[0];
+            matchBadge.classList.remove('hidden');
+            matchBadge.textContent = topMatch.children && topMatch.children.length > 0 
+                ? `Press ↵ to Open Folder "${topMatch.title}"` 
+                : `Press ↵ to Launch "${topMatch.title}"`;
+        }
+
+        function createCardElement(item, isTopMatch, isSearchMode) {
+            const hasChildren = item.children && item.children.length > 0;
+            const hasLink = item.link && item.link.trim().length > 0;
+            const btn = document.createElement('div');
+            btn.className = `group relative px-4 py-3.5 rounded-xl border transition-all duration-150 flex items-center justify-between cursor-pointer ${
+                isTopMatch 
+                    ? 'bg-indigo-950/80 border-indigo-500 shadow-md ring-2 ring-indigo-500/40 text-white font-semibold' 
+                    : hasChildren
+                        ? 'bg-slate-800/90 hover:bg-slate-800 border-indigo-500/40 hover:border-indigo-400 text-slate-200'
+                        : 'bg-slate-800/60 hover:bg-slate-800 border-slate-700/80 hover:border-slate-600 text-slate-200'
+            }`;
+
+            const badgeHtml = (!isFocusMode && hasChildren)
+                ? `<span class="text-[10px] font-mono px-2 py-0.5 rounded bg-indigo-900/60 text-indigo-300 border border-indigo-700/50">📁 ${item.children.length}</span>`
+                : (item.tag ? `<span class="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-900 border border-slate-700 text-indigo-400">🏷️ ${escapeHtml(item.tag)}</span>` : '');
+
+            btn.innerHTML = `
+                <div class="flex items-center gap-2.5 truncate">
+                    <span class="text-base">${(!isFocusMode && hasChildren) ? '📁' : '🔗'}</span>
+                    <span class="font-medium text-sm sm:text-base truncate text-white group-hover:text-indigo-300 transition-colors">
+                        ${escapeHtml(item.title)}
+                    </span>
+                </div>
+                <div class="flex items-center gap-2 shrink-0">
+                    ${badgeHtml}
+                    ${isTopMatch ? '<span class="text-[11px] text-indigo-300 font-mono bg-indigo-900/60 border border-indigo-700/50 px-2 py-0.5 rounded">↵ Launch</span>' : ''}
+                </div>
+            `;
+
+            btn.addEventListener('click', () => {
+                justOpenedFolderByEnter = false;
+                if (!isFocusMode && hasChildren && !isSearchMode) {
+                    currentPath.push(item);
+                    render();
+                } else if (!isFocusMode && hasChildren && isSearchMode) {
+                    searchInput.value = '';
+                    currentPath = [...getFolderPath(item)];
+                    render();
+                } else if (hasLink) {
+                    openLink(item.link);
+                    searchInput.value = '';
+                    render();
+                }
+            });
+
+            return btn;
+        }
+
+        function renderBreadcrumbs() {
+            breadcrumbs.innerHTML = '';
+            const rootBtn = document.createElement('button');
+            rootBtn.className = `px-2 py-1 rounded text-xs transition-colors flex items-center gap-1 ${
+                currentPath.length === 0 ? 'font-bold text-white bg-indigo-600/30 border border-indigo-500/40' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+            }`;
+            rootBtn.innerHTML = '🏠 Home';
+            rootBtn.addEventListener('click', () => {
+                currentPath = [];
+                justOpenedFolderByEnter = false;
+                render();
+            });
+            breadcrumbs.appendChild(rootBtn);
+
+            currentPath.forEach((node, index) => {
+                const sep = document.createElement('span');
+                sep.className = 'text-slate-600 text-xs';
+                sep.textContent = '>';
+                breadcrumbs.appendChild(sep);
+
+                const stepBtn = document.createElement('button');
+                const isLast = index === currentPath.length - 1;
+                stepBtn.className = `px-2 py-1 rounded text-xs transition-colors truncate max-w-[150px] ${
+                    isLast ? 'font-bold text-white bg-indigo-600/30 border border-indigo-500/40' : 'text-slate-400 hover:text-white hover:bg-slate-800'
+                }`;
+                stepBtn.textContent = node.title;
+                stepBtn.addEventListener('click', () => {
+                    currentPath = currentPath.slice(0, index + 1);
+                    justOpenedFolderByEnter = false;
+                    render();
+                });
+                breadcrumbs.appendChild(stepBtn);
+            });
+        }
+
+        function updateViewToggleBtn() {
+            if (!viewToggleBtn) return;
+            viewToggleBtn.innerHTML = currentView === 'grid' ? '📁 Folder View' : '🌳 Tree View';
+        }
+
+        viewToggleBtn.addEventListener('click', () => {
+            currentView = (currentView === 'grid') ? 'tree' : 'grid';
+            updateViewToggleBtn();
+            render();
+        });
+
+        exitFocusBtn.addEventListener('click', () => {
+            isFocusMode = !isFocusMode;
+            localStorage.setItem('quick_launcher_focus_mode', isFocusMode ? 'true' : 'false');
+            render();
+            searchInput.focus();
+        });
+
+        toggleDataBtn.addEventListener('click', () => {
+            dataSection.classList.toggle('hidden');
+        });
+
+        searchInput.addEventListener('input', () => {
+            justOpenedFolderByEnter = false;
+            render();
+        });
+
+        searchInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                const query = searchInput.value.trim();
+
+                if (!isFocusMode && currentPath.length > 0 && query.length === 0) {
+                    const currentFolder = currentPath[currentPath.length - 1];
+                    const folderLink = currentFolder.link || getFirstLinkInFolder(currentFolder);
+                    if (folderLink) {
+                        openLink(folderLink);
+                        return;
+                    }
+                }
+
+                if (activeFilteredResults.length > 0) {
+                    const topMatch = activeFilteredResults[0];
+                    const isFolder = !isFocusMode && topMatch.children && topMatch.children.length > 0;
+
+                    if (isFolder) {
+                        currentPath.push(topMatch);
+                        searchInput.value = '';
+                        justOpenedFolderByEnter = true;
+                        render();
+                    } else if (topMatch.link) {
+                        openLink(topMatch.link);
+                        searchInput.value = '';
+                        render();
+                    }
+                }
+            }
+        });
+
+        let saveTimeout;
+        dataInput.addEventListener('input', () => {
+            const rawData = dataInput.value;
+            localStorage.setItem('quick_launcher_data', rawData);
+            const parsed = parseSaveData(rawData);
+            rootNodes = parsed.roots;
+            flatItems = parsed.items;
+            render();
+
+            statusIndicator.classList.remove('opacity-0');
+            clearTimeout(saveTimeout);
+            saveTimeout = setTimeout(() => {
+                statusIndicator.classList.add('opacity-0');
+            }, 1500);
+        });
+
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Tab') {
+                if (e.repeat || document.activeElement === dataInput) return;
+                e.preventDefault();
+                isFocusMode = !isFocusMode;
+                localStorage.setItem('quick_launcher_focus_mode', isFocusMode ? 'true' : 'false');
+                render();
+                searchInput.focus();
+            }
+        });
+
+        // Automatically refocus search bar when returning to the tab
+        window.addEventListener('focus', () => {
+            if (document.activeElement !== dataInput) {
+                searchInput.focus();
+            }
+        });
+
+        window.addEventListener('DOMContentLoaded', () => {
+            const savedData = localStorage.getItem('quick_launcher_data') || defaultSaveData;
+            dataInput.value = savedData;
+            const parsed = parseSaveData(savedData);
+            rootNodes = parsed.roots;
+            flatItems = parsed.items;
+            render();
+            searchInput.focus();
+        });
+    </script>
+</body>
+</html>

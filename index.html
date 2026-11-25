@@ -177,7 +177,16 @@
                     <span id="dictationDot" class="w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0"></span>
                     <span id="dictationStatusText" class="truncate">Listening — say "Open", "Navigation", or "Go to" + item</span>
                 </div>
-                <span id="dictationTranscript" class="text-slate-500 dark:text-slate-400 italic truncate max-w-[40%] hidden sm:inline"></span>
+                <div class="flex items-center gap-2 shrink-0">
+                    <span id="dictationTranscript" class="text-slate-500 dark:text-slate-400 italic truncate max-w-[180px] hidden sm:inline"></span>
+                    <button
+                        id="dictationResumeBtn"
+                        type="button"
+                        class="hidden px-2.5 py-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 active:scale-95 text-white font-medium text-xs transition-all"
+                    >
+                        Resume Mic
+                    </button>
+                </div>
             </div>
 
             <!-- Focus Mode Scrollable Results Dropdown (Shows ALL matching results) -->
@@ -364,6 +373,7 @@
         const dictationStatusText = document.getElementById('dictationStatusText');
         const dictationTranscript = document.getElementById('dictationTranscript');
         const dictationDot = document.getElementById('dictationDot');
+        const dictationResumeBtn = document.getElementById('dictationResumeBtn');
 
         const focusResultsDropdown = document.getElementById('focusResultsDropdown');
         const historySection = document.getElementById('historySection');
@@ -416,13 +426,22 @@
         let activePopoverLink = null;
 
         // Dictation state (off by default, remembered across reloads)
+        const isFileProtocol = window.location.protocol === 'file:';
         let isDictationOn = localStorage.getItem(STORAGE_KEYS.DICTATION) === 'true';
         let speechRecognition = null;
         let isRecognitionRunning = false;
+        let isStartingRecognition = false;
         let dictationWaitingForQuery = false;
         let dictationWaitTimeout = null;
         let dictationRestartTimeout = null;
         let pendingGestureResume = false;
+        let dictationPausedToAvoidPrompt = false;
+        let pausedForVisibility = false;
+        let micPermissionState = 'unknown'; // 'granted' | 'prompt' | 'denied' | 'unknown'
+        let hasStartedOnceThisSession = false;
+        let repromptDetected = false;
+        let recognitionStartAttemptTime = 0;
+        let isAutoRestartAttempt = false;
 
         // =========================================================================
         // UTILITY HELPERS
@@ -1224,7 +1243,13 @@
 
         let saveTimeout;
         function applySaveDataChange(rawData) {
-            localStorage.setItem(STORAGE_KEYS.DATA, rawData);
+            try {
+                localStorage.setItem(STORAGE_KEYS.DATA, rawData);
+            } catch (err) {
+                console.error('Failed to save data to localStorage:', err);
+                showToast('Could not save data to browser storage.', 3000);
+            }
+
             const parsed = parseSaveData(rawData);
             rootNodes = parsed.roots;
             flatItems = parsed.items;
@@ -1268,26 +1293,71 @@
         // =========================================================================
         const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
 
+        async function refreshMicPermissionState() {
+            if (!navigator.permissions || !navigator.permissions.query) return micPermissionState;
+            try {
+                const status = await navigator.permissions.query({ name: 'microphone' });
+                micPermissionState = status.state;
+                status.onchange = () => {
+                    micPermissionState = status.state;
+                    if (micPermissionState === 'granted') {
+                        repromptDetected = false;
+                    }
+                    updateDictationUI();
+                };
+            } catch (e) {
+                // Safari / browsers without microphone permission query support
+                micPermissionState = 'unknown';
+            }
+            return micPermissionState;
+        }
+
+        function canAutoRestartWithoutPrompt() {
+            if (repromptDetected || micPermissionState === 'denied') return false;
+            // Browsers do not persist microphone permissions on local file:/// origins,
+            // so auto-restarting after silence will keep re-prompting the user.
+            if (isFileProtocol) return false;
+            if (micPermissionState === 'granted') return true;
+            if (micPermissionState === 'prompt' && hasStartedOnceThisSession) return false;
+            return !isFileProtocol;
+        }
+
         function updateDictationUI(stateText = null) {
             if (isDictationOn) {
-                dictationBtn.classList.add('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400', 'mic-active-pulse');
-                dictationBtn.classList.remove('text-slate-500', 'dark:text-slate-400');
+                const isPaused = pendingGestureResume || dictationPausedToAvoidPrompt;
                 dictationStatusBar.classList.remove('hidden');
 
-                if (pendingGestureResume) {
+                if (isPaused) {
+                    dictationBtn.classList.add('bg-amber-500/20', 'text-amber-600', 'dark:text-amber-400');
+                    dictationBtn.classList.remove('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400', 'mic-active-pulse', 'text-slate-500', 'dark:text-slate-400');
+                    dictationResumeBtn.classList.remove('hidden');
                     dictationDot.className = 'w-2 h-2 rounded-full bg-amber-400 shrink-0';
-                    dictationStatusText.textContent = 'Dictation armed — tap or click anywhere to resume mic';
-                } else if (dictationWaitingForQuery) {
-                    dictationDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0';
-                    dictationStatusText.textContent = 'Heard trigger — say the link name now...';
+
+                    if (dictationPausedToAvoidPrompt) {
+                        dictationStatusText.textContent = isFileProtocol
+                            ? 'Paused after silence (local file:// browsers re-ask on auto-restart)'
+                            : 'Mic paused after silence so the browser will not re-prompt';
+                    } else {
+                        dictationStatusText.textContent = 'Dictation armed — click Resume Mic to start listening';
+                    }
                 } else {
-                    dictationDot.className = 'w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0';
-                    dictationStatusText.textContent = stateText || 'Listening — say "Open", "Navigation", or "Go to" + item';
+                    dictationBtn.classList.add('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400', 'mic-active-pulse');
+                    dictationBtn.classList.remove('bg-amber-500/20', 'text-amber-600', 'dark:text-amber-400', 'text-slate-500', 'dark:text-slate-400');
+                    dictationResumeBtn.classList.add('hidden');
+
+                    if (dictationWaitingForQuery) {
+                        dictationDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0';
+                        dictationStatusText.textContent = 'Heard trigger — say the link name now...';
+                    } else {
+                        dictationDot.className = 'w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0';
+                        dictationStatusText.textContent = stateText || 'Listening — say "Open", "Navigation", or "Go to" + item';
+                    }
                 }
             } else {
-                dictationBtn.classList.remove('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400', 'mic-active-pulse');
+                dictationBtn.classList.remove('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400', 'bg-amber-500/20', 'text-amber-600', 'dark:text-amber-400', 'mic-active-pulse');
                 dictationBtn.classList.add('text-slate-500', 'dark:text-slate-400');
                 dictationStatusBar.classList.add('hidden');
+                dictationResumeBtn.classList.add('hidden');
                 dictationTranscript.textContent = '';
             }
         }
@@ -1305,7 +1375,7 @@
 
             if (scored.length > 0) {
                 const topMatch = scored[0].item;
-                showToast(`🎙️ Opening <strong class="text-indigo-300">${escapeHtml(topMatch.title)}</strong>`);
+                showToast(`🎙️ Opening "${escapeHtml(topMatch.title)}"`);
                 openLink(topMatch.link, topMatch);
             } else {
                 showToast(`🎙️ No match found for "${escapeHtml(cleanQuery)}"`);
@@ -1313,39 +1383,40 @@
         }
 
         function processDictationTranscript(rawTranscript) {
-            const cleaned = rawTranscript.replace(/[.,!?;:]+$/g, '').trim();
+            const cleaned = rawTranscript.trim();
             if (!cleaned) return;
 
-            // Check for wake words: "Open", "Navigation", or "Go to"
-            const triggerRegex = /\b(open|navigation|go to)\b\s*(.*)$/i;
-            const match = cleaned.match(triggerRegex);
-
-            if (match) {
+            // If we just heard a wake word ("Open", "Navigation", "Go to"), treat this phrase as the target
+            if (dictationWaitingForQuery) {
+                dictationWaitingForQuery = false;
                 clearTimeout(dictationWaitTimeout);
-                const afterTrigger = (match[2] || '').trim();
+                updateDictationUI();
+                const stripped = cleaned.replace(/^(?:open|navigation|go\s+to)\b\s*/i, '').trim() || cleaned;
+                executeDictationQuery(stripped);
+                return;
+            }
 
-                if (afterTrigger.length > 0) {
+            // Look for wake words: "Open", "Navigation", or "Go to"
+            const triggerRegex = /\b(?:open|navigation|go\s+to)\b(?:\s+(.*))?$/i;
+            const match = cleaned.match(triggerRegex);
+            if (!match) return;
+
+            const queryAfterTrigger = (match[1] || '').trim();
+            if (queryAfterTrigger.length > 0) {
+                executeDictationQuery(queryAfterTrigger);
+            } else {
+                // Wait briefly for the next spoken phrase after the trigger word
+                dictationWaitingForQuery = true;
+                updateDictationUI();
+                clearTimeout(dictationWaitTimeout);
+                dictationWaitTimeout = setTimeout(() => {
                     dictationWaitingForQuery = false;
                     updateDictationUI();
-                    executeDictationQuery(afterTrigger);
-                } else {
-                    // User said only the trigger word — wait briefly for the next spoken phrase
-                    dictationWaitingForQuery = true;
-                    updateDictationUI();
-                    dictationWaitTimeout = setTimeout(() => {
-                        dictationWaitingForQuery = false;
-                        updateDictationUI();
-                    }, 6000);
-                }
-            } else if (dictationWaitingForQuery) {
-                clearTimeout(dictationWaitTimeout);
-                dictationWaitingForQuery = false;
-                updateDictationUI();
-                executeDictationQuery(cleaned);
+                }, 6000);
             }
         }
 
-        function startDictation() {
+        function startDictation({ isAutoRestart = false } = {}) {
             if (!SpeechRecognitionAPI) {
                 isDictationOn = false;
                 localStorage.setItem(STORAGE_KEYS.DICTATION, 'false');
@@ -1354,7 +1425,20 @@
                 return;
             }
 
-            if (isRecognitionRunning) return;
+            if (isRecognitionRunning || isStartingRecognition) return;
+
+            // Never restart in the background while the tab is hidden
+            if (document.hidden) {
+                pausedForVisibility = true;
+                return;
+            }
+
+            // Prevent repeated browser permission prompts if this origin does not persist mic grants
+            if (isAutoRestart && !canAutoRestartWithoutPrompt()) {
+                dictationPausedToAvoidPrompt = true;
+                updateDictationUI();
+                return;
+            }
 
             try {
                 if (!speechRecognition) {
@@ -1364,8 +1448,18 @@
                     speechRecognition.lang = 'en-US';
 
                     speechRecognition.onstart = () => {
+                        const startDelay = Date.now() - recognitionStartAttemptTime;
+                        // If an auto-restart waited >1.4s before starting, the browser showed another prompt
+                        if (isAutoRestartAttempt && startDelay > 1400) {
+                            repromptDetected = true;
+                        }
+                        hasStartedOnceThisSession = true;
                         isRecognitionRunning = true;
+                        isStartingRecognition = false;
                         pendingGestureResume = false;
+                        dictationPausedToAvoidPrompt = false;
+                        pausedForVisibility = false;
+                        refreshMicPermissionState();
                         updateDictationUI();
                     };
 
@@ -1388,35 +1482,62 @@
 
                     speechRecognition.onerror = (event) => {
                         isRecognitionRunning = false;
+                        isStartingRecognition = false;
                         if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-                            // Often triggered on auto-start after reload before user interacts
-                            pendingGestureResume = true;
-                            updateDictationUI();
-                            attachGestureResume();
+                            refreshMicPermissionState().then(() => {
+                                if (micPermissionState === 'denied') {
+                                    isDictationOn = false;
+                                    localStorage.setItem(STORAGE_KEYS.DICTATION, 'false');
+                                    showToast('Microphone access was blocked in browser settings.', 3200);
+                                } else {
+                                    pendingGestureResume = true;
+                                }
+                                updateDictationUI();
+                            });
                         } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
-                            updateDictationUI(`Mic paused (${event.error}) — retrying...`);
+                            updateDictationUI(`Mic paused (${event.error})`);
                         }
                     };
 
                     speechRecognition.onend = () => {
                         isRecognitionRunning = false;
-                        if (isDictationOn && !pendingGestureResume) {
-                            clearTimeout(dictationRestartTimeout);
-                            dictationRestartTimeout = setTimeout(() => {
-                                if (isDictationOn && !isRecognitionRunning && !pendingGestureResume) {
-                                    startDictation();
-                                }
-                            }, 300);
+                        isStartingRecognition = false;
+
+                        if (!isDictationOn || pendingGestureResume || dictationPausedToAvoidPrompt) {
+                            return;
                         }
+
+                        // Wait until the user comes back to this tab instead of restarting in the background
+                        if (document.hidden) {
+                            pausedForVisibility = true;
+                            return;
+                        }
+
+                        // Only auto-restart if the browser persists mic permission (so it won't ask again)
+                        if (!canAutoRestartWithoutPrompt()) {
+                            dictationPausedToAvoidPrompt = true;
+                            updateDictationUI();
+                            return;
+                        }
+
+                        clearTimeout(dictationRestartTimeout);
+                        dictationRestartTimeout = setTimeout(() => {
+                            if (isDictationOn && !isRecognitionRunning && !isStartingRecognition && !document.hidden) {
+                                startDictation({ isAutoRestart: true });
+                            }
+                        }, 350);
                     };
                 }
 
+                isStartingRecognition = true;
+                recognitionStartAttemptTime = Date.now();
+                isAutoRestartAttempt = isAutoRestart;
                 speechRecognition.start();
             } catch (err) {
                 isRecognitionRunning = false;
+                isStartingRecognition = false;
                 pendingGestureResume = true;
                 updateDictationUI();
-                attachGestureResume();
             }
         }
 
@@ -1425,6 +1546,9 @@
             clearTimeout(dictationWaitTimeout);
             dictationWaitingForQuery = false;
             pendingGestureResume = false;
+            dictationPausedToAvoidPrompt = false;
+            pausedForVisibility = false;
+            isStartingRecognition = false;
 
             if (speechRecognition) {
                 try {
@@ -1433,19 +1557,6 @@
             }
             isRecognitionRunning = false;
             updateDictationUI();
-        }
-
-        function attachGestureResume() {
-            const resumeHandler = () => {
-                if (isDictationOn && pendingGestureResume) {
-                    pendingGestureResume = false;
-                    startDictation();
-                }
-                window.removeEventListener('pointerdown', resumeHandler);
-                window.removeEventListener('keydown', resumeHandler);
-            };
-            window.addEventListener('pointerdown', resumeHandler, { once: true });
-            window.addEventListener('keydown', resumeHandler, { once: true });
         }
 
         function toggleDictation() {
@@ -1458,7 +1569,9 @@
 
             if (isDictationOn) {
                 pendingGestureResume = false;
-                startDictation();
+                dictationPausedToAvoidPrompt = false;
+                repromptDetected = false;
+                startDictation({ isAutoRestart: false });
                 showToast('🎙️ Dictation Mode ON');
             } else {
                 stopDictation();
@@ -1507,6 +1620,12 @@
         modeToggleBtn.addEventListener('click', toggleViewMode);
         themeToggleBtn.addEventListener('click', toggleTheme);
         dictationBtn.addEventListener('click', toggleDictation);
+        dictationResumeBtn.addEventListener('click', () => {
+            pendingGestureResume = false;
+            dictationPausedToAvoidPrompt = false;
+            repromptDetected = false;
+            startDictation({ isAutoRestart: false });
+        });
         undoDataBtn.addEventListener('click', undoSaveData);
         redoDataBtn.addEventListener('click', redoSaveData);
         copyDataBtn.addEventListener('click', copySaveData);
@@ -1560,6 +1679,12 @@
 
         // Save Data live updates & keyboard Undo/Redo sync
         dataInput.addEventListener('input', handleSaveDataChanged);
+        dataInput.addEventListener('change', handleSaveDataChanged);
+        window.addEventListener('beforeunload', () => {
+            try {
+                localStorage.setItem(STORAGE_KEYS.DATA, dataInput.value);
+            } catch (err) {}
+        });
         dataInput.addEventListener('keydown', (e) => {
             const modKey = e.ctrlKey || e.metaKey;
             if (!modKey) return;
@@ -1600,13 +1725,34 @@
             }
         });
 
+        // Resume dictation cleanly when returning to the tab (only if browser persists mic permission)
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden && isDictationOn && pausedForVisibility) {
+                pausedForVisibility = false;
+                if (canAutoRestartWithoutPrompt()) {
+                    startDictation({ isAutoRestart: true });
+                } else {
+                    dictationPausedToAvoidPrompt = true;
+                    updateDictationUI();
+                }
+            }
+        });
+
         // =========================================================================
         // INITIALIZATION
         // =========================================================================
-        window.addEventListener('DOMContentLoaded', () => {
+        window.addEventListener('DOMContentLoaded', async () => {
             applyTheme(currentTheme);
 
-            const savedData = localStorage.getItem(STORAGE_KEYS.DATA) || defaultSaveData;
+            let savedData = defaultSaveData;
+            try {
+                const stored = localStorage.getItem(STORAGE_KEYS.DATA);
+                if (stored !== null) {
+                    savedData = stored;
+                }
+            } catch (err) {
+                console.error('Failed to read saved data:', err);
+            }
             dataInput.value = savedData;
             initUndoHistory(savedData);
 
@@ -1615,11 +1761,17 @@
             flatItems = parsed.items;
 
             render();
+            await refreshMicPermissionState();
             updateDictationUI();
 
-            // Resume Dictation Mode if it was left ON before reload
+            // Resume Dictation Mode if it was left ON before reload (without ambushing with a prompt)
             if (isDictationOn) {
-                startDictation();
+                if (canAutoRestartWithoutPrompt()) {
+                    startDictation({ isAutoRestart: true });
+                } else {
+                    pendingGestureResume = true;
+                    updateDictationUI();
+                }
             }
 
             // Focus search input on desktop load

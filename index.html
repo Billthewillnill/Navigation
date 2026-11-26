@@ -142,19 +142,6 @@
                         </svg>
                     </button>
 
-                    <!-- Copy Link Mode Toggle (Appears in Expanded View next to Dictation) -->
-                    <button
-                        id="copyLinkModeBtn"
-                        type="button"
-                        title="Toggle Copy Link Mode (Click items to copy their link instead of opening)"
-                        aria-label="Toggle Copy Link Mode"
-                        class="min-w-[36px] min-h-[36px] sm:min-w-[40px] sm:min-h-[40px] p-1.5 sm:p-2 rounded-xl text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 active:scale-95 transition-all flex items-center justify-center relative"
-                    >
-                        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                            <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/>
-                        </svg>
-                    </button>
-
                     <!-- Dictation Mode Microphone Toggle -->
                     <button
                         id="dictationBtn"
@@ -165,6 +152,19 @@
                     >
                         <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
                             <path stroke-linecap="round" stroke-linejoin="round" d="M12 18.75a6 6 0 006-6v-1.5m-6 7.5a6 6 0 01-6-6v-1.5m6 7.5v3.75m-3.75 0h7.5M12 15.75a3 3 0 01-3-3V4.5a3 3 0 116 0v8.25a3 3 0 01-3 3z"/>
+                        </svg>
+                    </button>
+
+                    <!-- Copy Link Mode Toggle (Available in Focus & Expanded Views, next to App Clipboard) -->
+                    <button
+                        id="copyLinkModeBtn"
+                        type="button"
+                        title="Toggle Copy Link Mode (Click items to copy their link instead of opening)"
+                        aria-label="Toggle Copy Link Mode"
+                        class="min-w-[36px] min-h-[36px] sm:min-w-[40px] sm:min-h-[40px] p-1.5 sm:p-2 rounded-xl text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 active:scale-95 transition-all flex items-center justify-center relative"
+                    >
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/>
                         </svg>
                     </button>
 
@@ -936,7 +936,7 @@
                 // Clicking the box re-opens the link (or copies it when Copy Link Mode is active)
                 box.addEventListener('click', () => {
                     closeHistoryPopover();
-                    if (!isFocusMode && isCopyLinkMode) {
+                    if (isCopyLinkMode) {
                         copyItemLink(item.link, { title: item.title, tag: item.tag });
                     } else {
                         openLink(item.link, { title: item.title, tag: item.tag });
@@ -948,10 +948,39 @@
         }
 
         // =========================================================================
-        // SAVE DATA PARSER & TREE BUILDER
+        // LINK OPENING, SAVE DATA PARSING & TREE BUILDING
         // =========================================================================
+        function openLink(url, meta = null) {
+            if (!url) return;
+            const formattedUrl = formatUrl(url);
+            const matchedItem = meta || flatItems.find(i => formatUrl(i.link) === formattedUrl);
+            const title = matchedItem ? matchedItem.title : '';
+            const tag = matchedItem ? matchedItem.tag : '';
+
+            // Always store the clicked item in History and the App Clipboard
+            recordHistory(formattedUrl, title, tag);
+            setAppClipboard(formattedUrl, title);
+
+            // Launch custom app protocols cleanly without leaving a blank tab
+            if (/^(vscode|mailto|tel):/i.test(formattedUrl)) {
+                const tempLink = document.createElement('a');
+                tempLink.href = formattedUrl;
+                tempLink.style.display = 'none';
+                document.body.appendChild(tempLink);
+                tempLink.click();
+                document.body.removeChild(tempLink);
+            } else {
+                window.open(formattedUrl, '_blank', 'noopener,noreferrer');
+            }
+
+            // Always clear the search bar when opening a link (Focus & Expanded views)
+            searchInput.value = '';
+            justOpenedFolderByEnter = false;
+            render();
+        }
+
         function parseSaveData(rawText) {
-            const lines = rawText.split('\n');
+            const lines = (rawText || '').split('\n');
             const items = [];
 
             lines.forEach((line, index) => {
@@ -986,7 +1015,10 @@
 
             items.forEach(item => {
                 const depth = item.depth;
-                while (stack.length > depth) stack.pop();
+
+                while (stack.length > depth) {
+                    stack.pop();
+                }
 
                 if (depth === 0 || stack.length === 0) {
                     item.parent = null;
@@ -998,6 +1030,7 @@
                     item.path = [...parent.path, item.title];
                     parent.children.push(item);
                 }
+
                 stack[depth] = item;
             });
 
@@ -1005,25 +1038,25 @@
         }
 
         // =========================================================================
-        // SEARCH SCORING & FOLDER CONTEXT HELPERS
+        // SEARCH SCORING & CONTEXT HELPERS
         // =========================================================================
         function calculateSearchScore(item, query) {
-            const q = query.toLowerCase();
+            const q = query.toLowerCase().trim();
+            if (!q) return 0;
+
             const tag = (item.tag || '').toLowerCase();
             const title = (item.title || '').toLowerCase();
             const desc = (item.description || '').toLowerCase();
-            const link = (item.link || '').toLowerCase();
 
             if (tag === q) return 1000;
-            if (tag.startsWith(q)) return 900 - (tag.length - q.length);
+            if (tag.startsWith(q)) return 900 - Math.min(80, tag.length - q.length);
             if (tag.includes(q)) return 800;
 
             if (title === q) return 500;
-            if (title.startsWith(q)) return 400;
+            if (title.startsWith(q)) return 400 - Math.min(80, title.length - q.length);
             if (title.includes(q)) return 300;
 
             if (desc.includes(q)) return 100;
-            if (link.includes(q)) return 50;
 
             return 0;
         }
@@ -1049,9 +1082,8 @@
         }
 
         function getFirstLinkInFolder(folderNode) {
-            if (!folderNode) return null;
             if (folderNode.link && folderNode.link.trim().length > 0) {
-                return folderNode;
+                return folderNode.link;
             }
             for (const child of folderNode.children) {
                 const found = getFirstLinkInFolder(child);
@@ -1060,46 +1092,93 @@
             return null;
         }
 
+        function findBestLinkMatch(query) {
+            const q = (query || '').trim().toLowerCase();
+            if (!q) return null;
+
+            const candidates = flatItems.filter(item => item.link && item.link.trim().length > 0);
+            const scored = candidates
+                .map(item => ({ item, score: calculateSearchScore(item, q) }))
+                .filter(entry => entry.score > 0);
+
+            if (scored.length === 0) return null;
+            scored.sort((a, b) => b.score - a.score);
+            return scored[0].item;
+        }
+
         // =========================================================================
-        // LINK OPENER (Supports https, file:///, vscode://, mailto:, tel:)
+        // RENDERING & VIEW MODES (Focus Mode <-> Expanded Workspace View)
         // =========================================================================
-        function openLink(url, meta = null) {
-            if (!url) return;
-            const formattedUrl = formatUrl(url);
-
-            // Always store the clicked/opened link in the App Clipboard
-            const matchedItem = meta || flatItems.find(i => formatUrl(i.link) === formattedUrl);
-            setAppClipboard(formattedUrl, matchedItem ? matchedItem.title : '');
-
-            // Record in history
-            recordHistory(formattedUrl, matchedItem ? matchedItem.title : '', matchedItem ? matchedItem.tag : '');
-
-            // Launch link via anchor element (reliable for file:/// and vscode:// protocols)
-            try {
-                const link = document.createElement('a');
-                link.href = formattedUrl;
-                link.target = '_blank';
-                link.rel = 'noopener noreferrer';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            } catch (err) {
-                console.error('Error opening link:', err);
-                showToast('Could not automatically open link.');
-            }
-
-            // Always clear the search bar whenever a link opens (in both modes)
-            if (searchInput.value !== '') {
-                searchInput.value = '';
-                render();
+        function updateModeToggleVisuals() {
+            if (isFocusMode) {
+                modeToggleBtn.title = 'Switch to Folders & Save Data View (Tab)';
+                modeToggleBtn.classList.add('text-indigo-600', 'dark:text-indigo-400', 'bg-indigo-500/15');
+                modeToggleBtn.classList.remove('text-slate-500', 'dark:text-slate-400');
+                modeToggleIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h4.5A2.25 2.25 0 0112.75 6v12a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18V6zM15.75 6A2.25 2.25 0 0118 3.75h.75A2.25 2.25 0 0121 6v12a2.25 2.25 0 01-2.25 2.25H18A2.25 2.25 0 0115.75 18V6z"/>`;
+                themeToggleBtn.classList.add('hidden');
+                copyLinkModeBtn.classList.remove('hidden');
+                copyModeIndicator.classList.add('hidden');
+                copyModeIndicator.classList.remove('inline-flex');
+            } else {
+                modeToggleBtn.title = 'Switch to Search Bar Focus Mode (Tab)';
+                modeToggleBtn.classList.remove('text-indigo-600', 'dark:text-indigo-400', 'bg-indigo-500/15');
+                modeToggleBtn.classList.add('text-slate-500', 'dark:text-slate-400');
+                modeToggleIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25"/>`;
+                themeToggleBtn.classList.remove('hidden');
+                copyLinkModeBtn.classList.remove('hidden');
+                updateCopyLinkModeUI();
             }
         }
 
-        function render() {
-            const query = searchInput.value.trim();
+        function updateMatchBadge(query) {
+            // Hide Enter badge in Focus Mode and at Root level; only show inside folders
+            if (isFocusMode || currentPath.length === 0) {
+                matchBadge.classList.add('hidden');
+                matchBadge.classList.remove('md:inline-flex');
+                return;
+            }
 
-            // Show/hide clear search button
-            if (query.length > 0) {
+            if (query.length === 0) {
+                const currentFolder = currentPath[currentPath.length - 1];
+                const folderLink = currentFolder.link || getFirstLinkInFolder(currentFolder);
+                if (folderLink) {
+                    matchBadge.textContent = isCopyLinkMode
+                        ? `↵ Copy "${currentFolder.title}"`
+                        : `↵ Open "${currentFolder.title}"`;
+                    matchBadge.classList.remove('hidden');
+                    matchBadge.classList.add('md:inline-flex');
+                } else {
+                    matchBadge.classList.add('hidden');
+                    matchBadge.classList.remove('md:inline-flex');
+                }
+                return;
+            }
+
+            if (activeFilteredResults.length === 0) {
+                matchBadge.classList.add('hidden');
+                matchBadge.classList.remove('md:inline-flex');
+                return;
+            }
+
+            const topMatch = activeFilteredResults[0];
+            const isFolder = topMatch.children && topMatch.children.length > 0;
+            if (isFolder) {
+                matchBadge.textContent = `↵ Folder "${topMatch.title}"`;
+            } else {
+                matchBadge.textContent = isCopyLinkMode
+                    ? `↵ Copy "${topMatch.title}"`
+                    : `↵ Launch "${topMatch.title}"`;
+            }
+            matchBadge.classList.remove('hidden');
+            matchBadge.classList.add('md:inline-flex');
+        }
+
+        function render() {
+            const rawQuery = searchInput.value;
+            const query = rawQuery.trim().toLowerCase();
+
+            // Toggle Clear button visibility
+            if (rawQuery.length > 0) {
                 clearSearchBtn.classList.remove('hidden');
             } else {
                 clearSearchBtn.classList.add('hidden');
@@ -1108,115 +1187,95 @@
             updateModeToggleVisuals();
 
             if (isFocusMode) {
-                // FOCUS MODE: Vertically & horizontally centered; shifts smoothly upward as results appear so everything stays centered
-                mainWrapper.className = 'relative z-10 w-full mx-auto px-4 sm:px-6 py-6 flex-1 flex flex-col justify-center max-w-2xl transition-all duration-200';
-                workspaceSection.classList.add('hidden');
+                // Keep search bar + results centered vertically & horizontally
+                mainWrapper.className = 'relative z-10 w-full mx-auto px-4 sm:px-6 py-5 sm:py-8 flex-1 flex flex-col justify-center transition-all duration-200 max-w-2xl';
                 historySection.classList.add('hidden');
+                workspaceSection.classList.add('hidden');
+                closeHistoryPopover();
 
-                if (query.length === 0) {
+                if (query.length > 0) {
+                    renderFocusSearchResults(query);
+                } else {
                     focusResultsDropdown.classList.add('hidden');
                     focusResultsDropdown.innerHTML = '';
                     activeFilteredResults = [];
-                } else {
-                    renderFocusSearchResults(query);
                 }
             } else {
-                // EXPANDED WORKSPACE: Search Bar on top -> History Bar -> Side-by-Side Folders & Save Data
-                mainWrapper.className = 'relative z-10 w-full mx-auto px-4 sm:px-6 py-4 sm:py-6 flex-1 flex flex-col max-w-6xl transition-all duration-200';
+                mainWrapper.className = 'relative z-10 w-full mx-auto px-4 sm:px-6 py-5 sm:py-8 flex-1 flex flex-col transition-all duration-200 max-w-6xl';
                 focusResultsDropdown.classList.add('hidden');
                 workspaceSection.classList.remove('hidden');
-
                 renderHistoryBar();
-                renderBreadcrumbs();
 
                 if (query.length > 0) {
                     renderWorkspaceSearchResults(query);
                 } else {
                     renderFolderView();
                 }
+
+                renderBreadcrumbs();
             }
 
             updateMatchBadge(query);
         }
 
-        function getScoredResults(query) {
+        function renderFocusSearchResults(query) {
             const contextPool = getContextItems();
             const scored = contextPool
                 .map(item => ({ item, score: calculateSearchScore(item, query) }))
                 .filter(entry => entry.score > 0);
-            scored.sort((a, b) => b.score - a.score);
-            return scored.map(entry => entry.item);
-        }
 
-        function renderFocusSearchResults(query) {
-            // Show ALL matching results (no 3-item cap), smoothly scrollable with wheel or touch
-            activeFilteredResults = getScoredResults(query);
-            focusResultsDropdown.classList.remove('hidden');
+            scored.sort((a, b) => b.score - a.score);
+            // Show ALL matching results so the user can scroll through everything
+            activeFilteredResults = scored.map(entry => entry.item);
+
             focusResultsDropdown.innerHTML = '';
+            focusResultsDropdown.classList.remove('hidden');
 
             if (activeFilteredResults.length === 0) {
                 focusResultsDropdown.innerHTML = `
-                    <div class="py-6 text-center text-slate-500 dark:text-slate-400 text-sm">
-                        No matching links found for "<span class="text-slate-800 dark:text-slate-200">${escapeHtml(query)}</span>"
+                    <div class="py-5 px-3 text-center text-sm text-slate-500 dark:text-slate-400">
+                        No matching links found
                     </div>
                 `;
                 return;
             }
 
             activeFilteredResults.forEach((item, index) => {
-                focusResultsDropdown.appendChild(createCardElement(item, index === 0, true));
+                const card = createCardElement(item, index === 0, true, true);
+                focusResultsDropdown.appendChild(card);
             });
         }
 
         function renderWorkspaceSearchResults(query) {
-            activeFilteredResults = getScoredResults(query);
+            const contextPool = getContextItems();
+            const scored = contextPool
+                .map(item => ({ item, score: calculateSearchScore(item, query) }))
+                .filter(entry => entry.score > 0);
+
+            scored.sort((a, b) => b.score - a.score);
+            activeFilteredResults = scored.map(entry => entry.item);
+
             buttonsGrid.innerHTML = '';
 
             if (activeFilteredResults.length === 0) {
                 buttonsGrid.classList.add('hidden');
                 noResults.classList.remove('hidden');
-            } else {
-                buttonsGrid.classList.remove('hidden');
-                noResults.classList.add('hidden');
-                activeFilteredResults.forEach((item, index) => {
-                    buttonsGrid.appendChild(createCardElement(item, index === 0, true));
-                });
+                return;
             }
-        }
 
-        function updateModeToggleVisuals() {
-            if (isFocusMode) {
-                modeToggleBtn.title = 'Switch to Folders & Save Data View (Tab)';
-                modeToggleBtn.classList.add('text-indigo-600', 'dark:text-indigo-400', 'bg-indigo-500/15');
-                modeToggleBtn.classList.remove('text-slate-500', 'dark:text-slate-400');
-                // Layout grid icon (indicates clicking opens full workspace)
-                modeToggleIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h4.5A2.25 2.25 0 0112.75 6v12a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18V6zM15.75 6A2.25 2.25 0 0118 3.75h.75A2.25 2.25 0 0121 6v12a2.25 2.25 0 01-2.25 2.25H18A2.25 2.25 0 0115.75 18V6z"/>`;
-                // Hide Expanded-View-only buttons in Focus Mode
-                themeToggleBtn.classList.add('hidden');
-                copyLinkModeBtn.classList.add('hidden');
-                copyModeIndicator.classList.add('hidden');
-                copyModeIndicator.classList.remove('inline-flex');
-            } else {
-                modeToggleBtn.title = 'Switch to Search Bar Focus Mode (Tab)';
-                modeToggleBtn.classList.remove('text-indigo-600', 'dark:text-indigo-400', 'bg-indigo-500/15');
-                modeToggleBtn.classList.add('text-slate-500', 'dark:text-slate-400');
-                // Focus/target icon (indicates clicking enters Search-only focus mode)
-                modeToggleIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" d="M9 9V4.5M9 9H4.5M9 9L3.75 3.75M9 15v4.5M9 15H4.5M9 15l-5.25 5.25M15 9h4.5M15 9V4.5M15 9l5.25-5.25M15 15h4.5M15 15v4.5m0-4.5l5.25 5.25"/>`;
-                // Show Light/Dark mode and Copy Link Mode buttons in Expanded View
-                themeToggleBtn.classList.remove('hidden');
-                copyLinkModeBtn.classList.remove('hidden');
-                updateCopyLinkModeUI();
-            }
+            buttonsGrid.classList.remove('hidden');
+            noResults.classList.add('hidden');
+
+            activeFilteredResults.forEach((item, index) => {
+                const card = createCardElement(item, index === 0, true, false);
+                buttonsGrid.appendChild(card);
+            });
         }
 
         function renderFolderView() {
-            let currentLevelItems = [];
-            if (currentPath.length === 0) {
-                currentLevelItems = rootNodes;
-            } else {
-                const currentFolder = currentPath[currentPath.length - 1];
-                currentLevelItems = currentFolder.children;
-            }
+            const currentLevelItems = currentPath.length === 0
+                ? rootNodes
+                : currentPath[currentPath.length - 1].children;
 
             activeFilteredResults = currentLevelItems;
             buttonsGrid.innerHTML = '';
@@ -1224,62 +1283,76 @@
             if (currentLevelItems.length === 0) {
                 buttonsGrid.classList.add('hidden');
                 noResults.classList.remove('hidden');
-            } else {
-                buttonsGrid.classList.remove('hidden');
-                noResults.classList.add('hidden');
-                currentLevelItems.forEach((item, index) => {
-                    buttonsGrid.appendChild(createCardElement(item, index === 0 && justOpenedFolderByEnter, false));
-                });
+                return;
             }
+
+            buttonsGrid.classList.remove('hidden');
+            noResults.classList.add('hidden');
+
+            currentLevelItems.forEach((item, index) => {
+                const isTopMatch = index === 0 && justOpenedFolderByEnter;
+                const card = createCardElement(item, isTopMatch, false, false);
+                buttonsGrid.appendChild(card);
+            });
         }
 
-        function createCardElement(item, isTopMatch, isSearchMode) {
-            const hasChildren = item.children && item.children.length > 0;
+        function createCardElement(item, isTopMatch, isSearchMode, isFocusDropdown = false) {
+            const hasChildren = !isFocusMode && item.children && item.children.length > 0;
             const hasLink = item.link && item.link.trim().length > 0;
-            const showAsFolder = !isFocusMode && hasChildren;
 
             const btn = document.createElement('button');
             btn.type = 'button';
-            btn.className = `group w-full text-left px-3.5 py-3 rounded-xl border transition-all duration-150 flex items-center justify-between gap-2.5 cursor-pointer active:scale-[0.99] ${
-                isTopMatch
-                    ? 'bg-indigo-50 dark:bg-indigo-500/15 border-indigo-400 dark:border-indigo-500/70 shadow-sm text-indigo-950 dark:text-white'
-                    : showAsFolder
-                        ? 'bg-slate-50 dark:bg-slate-800/70 hover:bg-indigo-50/60 dark:hover:bg-slate-800 border-indigo-200/80 dark:border-indigo-500/25 hover:border-indigo-300 dark:hover:border-indigo-400/50 text-slate-800 dark:text-slate-200'
-                        : 'bg-slate-50/80 dark:bg-slate-800/45 hover:bg-slate-100 dark:hover:bg-slate-800/90 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 text-slate-800 dark:text-slate-200'
-            }`;
 
-            const iconHtml = showAsFolder
-                ? `<svg class="w-4 h-4 text-indigo-500 dark:text-indigo-400 shrink-0" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12.75V12A2.25 2.25 0 014.5 9.75h15A2.25 2.25 0 0121.75 12v.75m-8.69-6.44l-2.12-2.12a1.5 1.5 0 00-1.061-.44H4.5A2.25 2.25 0 002.25 6v12a2.25 2.25 0 002.25 2.25h15A2.25 2.25 0 0021.75 18V9a2.25 2.25 0 00-2.25-2.25h-5.379a1.5 1.5 0 01-1.06-.44z"/></svg>`
-                : `<svg class="w-4 h-4 text-slate-400 group-hover:text-indigo-500 dark:group-hover:text-indigo-400 shrink-0 transition-colors" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 011.242 7.244l-4.5 4.5a4.5 4.5 0 01-6.364-6.364l1.757-1.757m13.35-.622l1.757-1.757a4.5 4.5 0 00-6.364-6.364l-4.5 4.5a4.5 4.5 0 001.242 7.244"/></svg>`;
+            const baseLayout = isFocusDropdown
+                ? 'w-full text-left px-3.5 py-3 rounded-xl border transition-all duration-150 flex items-center justify-between gap-3 active:scale-[0.99]'
+                : 'w-full text-left px-3.5 py-3 rounded-xl border transition-all duration-150 flex items-center justify-between gap-2.5 active:scale-[0.98]';
 
-            const badgeHtml = showAsFolder
-                ? `<span class="text-[11px] font-mono px-2 py-0.5 rounded-lg bg-indigo-100 dark:bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-200 dark:border-indigo-500/25 shrink-0">${item.children.length}</span>`
-                : (item.tag ? `<span class="text-[11px] font-mono px-2 py-0.5 rounded-lg bg-white dark:bg-slate-950/80 border border-slate-200 dark:border-slate-800 text-indigo-600 dark:text-indigo-400 shrink-0">${escapeHtml(item.tag)}</span>` : '');
+            let colorClasses = '';
+            if (isTopMatch) {
+                colorClasses = 'bg-indigo-50/90 dark:bg-indigo-950/70 border-indigo-400 dark:border-indigo-500/80 ring-2 ring-indigo-500/20 text-slate-900 dark:text-white shadow-sm';
+            } else if (hasChildren) {
+                colorClasses = 'bg-slate-50/90 dark:bg-slate-800/80 hover:bg-indigo-50/50 dark:hover:bg-slate-800 border-indigo-200 dark:border-indigo-500/35 hover:border-indigo-400 dark:hover:border-indigo-400/70 text-slate-800 dark:text-slate-100';
+            } else {
+                colorClasses = 'bg-white/90 dark:bg-slate-800/50 hover:bg-slate-50 dark:hover:bg-slate-800 border-slate-200 dark:border-slate-700/80 hover:border-slate-300 dark:hover:border-slate-600 text-slate-800 dark:text-slate-100';
+            }
+
+            btn.className = `group ${baseLayout} ${colorClasses}`;
+
+            const iconSpan = hasChildren ? '📁' : (isCopyLinkMode ? '📋' : '🔗');
+            const badgeHtml = hasChildren
+                ? `<span class="text-[11px] font-mono px-2 py-0.5 rounded-lg bg-indigo-500/10 dark:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 border border-indigo-500/20 shrink-0">${item.children.length}</span>`
+                : (item.tag ? `<span class="text-[11px] font-mono px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-indigo-600 dark:text-indigo-400 shrink-0">${escapeHtml(item.tag)}</span>` : '');
+
+            const pathHint = (isFocusDropdown && item.path && item.path.length > 1)
+                ? `<span class="block text-[11px] text-slate-400 dark:text-slate-500 truncate">${escapeHtml(item.path.slice(0, -1).join(' / '))}</span>`
+                : '';
 
             btn.innerHTML = `
-                <div class="flex items-center gap-2.5 min-w-0">
-                    ${iconHtml}
-                    <span class="font-medium text-sm truncate text-slate-800 dark:text-slate-100 group-hover:text-slate-950 dark:group-hover:text-white transition-colors">
-                        ${escapeHtml(item.title)}
-                    </span>
+                <div class="flex items-center gap-2.5 min-w-0 flex-1">
+                    <span class="text-base shrink-0">${iconSpan}</span>
+                    <div class="min-w-0 flex-1">
+                        <span class="block font-medium text-sm sm:text-[15px] truncate group-hover:text-indigo-600 dark:group-hover:text-indigo-300 transition-colors">
+                            ${escapeHtml(item.title)}
+                        </span>
+                        ${pathHint}
+                    </div>
                 </div>
                 <div class="flex items-center gap-1.5 shrink-0">
                     ${badgeHtml}
-                    ${isTopMatch ? '<span class="hidden sm:inline text-[11px] text-indigo-600 dark:text-indigo-300 font-mono bg-indigo-100 dark:bg-indigo-500/20 border border-indigo-200 dark:border-indigo-500/35 px-1.5 py-0.5 rounded-md">↵</span>' : ''}
                 </div>
             `;
 
             btn.addEventListener('click', () => {
                 justOpenedFolderByEnter = false;
-                if (showAsFolder && !isSearchMode) {
+                if (hasChildren && !isSearchMode) {
                     currentPath.push(item);
                     render();
-                } else if (showAsFolder && isSearchMode) {
+                } else if (hasChildren && isSearchMode) {
                     searchInput.value = '';
                     currentPath = [...getFolderPath(item), item];
                     render();
                 } else if (hasLink) {
-                    if (!isFocusMode && isCopyLinkMode) {
+                    if (isCopyLinkMode) {
                         copyItemLink(item.link, item);
                     } else {
                         openLink(item.link, item);
@@ -1295,17 +1368,12 @@
 
             const rootBtn = document.createElement('button');
             rootBtn.type = 'button';
-            rootBtn.className = `px-2.5 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-1.5 shrink-0 ${
+            rootBtn.className = `px-2.5 py-1 rounded-lg text-xs font-medium transition-colors flex items-center gap-1 shrink-0 ${
                 currentPath.length === 0
-                    ? 'font-semibold text-indigo-700 dark:text-white bg-indigo-500/15 dark:bg-indigo-500/20 border border-indigo-500/30 dark:border-indigo-500/35'
+                    ? 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30'
                     : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
             }`;
-            rootBtn.innerHTML = `
-                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M2.25 12l8.954-8.955c.44-.439 1.152-.439 1.591 0L21.75 12M4.5 9.75v10.125c0 .621.504 1.125 1.125 1.125H9.75v-4.875c0-.621.504-1.125 1.125-1.125h2.25c.621 0 1.125.504 1.125 1.125V21h4.125c.621 0 1.125-.504 1.125-1.125V9.75"/>
-                </svg>
-                <span>Home</span>
-            `;
+            rootBtn.innerHTML = '<span>🏠</span><span>Home</span>';
             rootBtn.addEventListener('click', () => {
                 currentPath = [];
                 justOpenedFolderByEnter = false;
@@ -1322,9 +1390,9 @@
                 const stepBtn = document.createElement('button');
                 stepBtn.type = 'button';
                 const isLast = index === currentPath.length - 1;
-                stepBtn.className = `px-2.5 py-1.5 rounded-lg text-xs transition-colors truncate max-w-[160px] shrink-0 ${
+                stepBtn.className = `px-2.5 py-1 rounded-lg text-xs font-medium transition-colors truncate max-w-[140px] shrink-0 ${
                     isLast
-                        ? 'font-semibold text-indigo-700 dark:text-white bg-indigo-500/15 dark:bg-indigo-500/20 border border-indigo-500/30 dark:border-indigo-500/35'
+                        ? 'bg-indigo-500/15 text-indigo-700 dark:text-indigo-300 border border-indigo-500/30'
                         : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800'
                 }`;
                 stepBtn.textContent = node.title;
@@ -1337,672 +1405,18 @@
             });
         }
 
-        function updateMatchBadge(query) {
-            // Hide the search-bar Enter pill in Focus Mode and whenever not inside any folder
-            if (isFocusMode || currentPath.length === 0) {
-                matchBadge.classList.add('hidden');
-                return;
-            }
-
-            if (query.length === 0) {
-                const currentFolder = currentPath[currentPath.length - 1];
-                matchBadge.classList.remove('hidden');
-                matchBadge.textContent = `↵ ${currentFolder.title}`;
-                return;
-            }
-
-            if (activeFilteredResults.length === 0) {
-                matchBadge.classList.add('hidden');
-                return;
-            }
-
-            const topMatch = activeFilteredResults[0];
-            matchBadge.classList.remove('hidden');
-            matchBadge.textContent = `↵ ${topMatch.title}`;
-        }
-
-        // =========================================================================
-        // COPY, PASTE, UNDO & REDO FOR SAVE DATA
-        // =========================================================================
-        function initUndoHistory(initialText) {
-            undoStack = [initialText];
-            redoStack = [];
-            updateUndoRedoButtons();
-        }
-
-        function pushUndoSnapshot(text) {
-            if (undoStack.length > 0 && undoStack[undoStack.length - 1] === text) {
-                return;
-            }
-            undoStack.push(text);
-            if (undoStack.length > 100) {
-                undoStack.shift();
-            }
-            redoStack = [];
-            updateUndoRedoButtons();
-        }
-
-        function flushPendingUndoSnapshot() {
-            clearTimeout(undoDebounceTimer);
-            pushUndoSnapshot(dataInput.value);
-        }
-
-        function updateUndoRedoButtons() {
-            const canUndo = undoStack.length > 1 || (undoStack.length === 1 && dataInput.value !== undoStack[0]);
-            const canRedo = redoStack.length > 0;
-
-            undoDataBtn.disabled = !canUndo;
-            undoDataBtn.classList.toggle('opacity-40', !canUndo);
-            undoDataBtn.classList.toggle('cursor-not-allowed', !canUndo);
-
-            redoDataBtn.disabled = !canRedo;
-            redoDataBtn.classList.toggle('opacity-40', !canRedo);
-            redoDataBtn.classList.toggle('cursor-not-allowed', !canRedo);
-        }
-
-        function undoSaveData() {
-            // Ensure any in-progress typing is captured before stepping back
-            flushPendingUndoSnapshot();
-            if (undoStack.length <= 1) return;
-
-            const currentVal = undoStack.pop();
-            redoStack.push(currentVal);
-            const previousVal = undoStack[undoStack.length - 1];
-
-            dataInput.value = previousVal;
-            applySaveDataChange(previousVal);
-            updateUndoRedoButtons();
-        }
-
-        function redoSaveData() {
-            if (redoStack.length === 0) return;
-
-            clearTimeout(undoDebounceTimer);
-            const nextVal = redoStack.pop();
-            undoStack.push(nextVal);
-
-            dataInput.value = nextVal;
-            applySaveDataChange(nextVal);
-            updateUndoRedoButtons();
-        }
-
-        // =========================================================================
-        // COPY & PASTE SAVE DATA
-        // =========================================================================
-        async function copySaveData() {
-            const text = dataInput.value;
-            const ok = await copyTextToSystemClipboard(text, 'Save Data copied to clipboard');
-            if (ok) {
-                copyBtnLabel.textContent = 'Copied ✓';
-                setTimeout(() => { copyBtnLabel.textContent = 'Copy'; }, 1600);
-            }
-        }
-
-        async function pasteSaveData() {
-            try {
-                if (!navigator.clipboard || !navigator.clipboard.readText) {
-                    throw new Error('Clipboard read API unavailable');
-                }
-                const clipText = await navigator.clipboard.readText();
-                if (clipText !== undefined && clipText !== null) {
-                    flushPendingUndoSnapshot();
-                    dataInput.value = clipText;
-                    pushUndoSnapshot(clipText);
-                    applySaveDataChange(clipText);
-                    pasteBtnLabel.textContent = 'Pasted ✓';
-                    showToast('Clipboard pasted into Save Data');
-                    setTimeout(() => { pasteBtnLabel.textContent = 'Paste'; }, 1600);
-                }
-            } catch (err) {
-                // Graceful fallback if browser restricts clipboard read on file:/// or iFrame
-                dataInput.focus();
-                dataInput.select();
-                showToast('Browser blocked auto-paste — press Ctrl+V / Cmd+V now', 3500);
-            }
-        }
-
-        let saveTimeout;
-        function applySaveDataChange(rawData) {
-            try {
-                localStorage.setItem(STORAGE_KEYS.DATA, rawData);
-            } catch (err) {
-                console.error('Failed to save data to localStorage:', err);
-                showToast('Could not save data to browser storage.', 3000);
-            }
-
-            const parsed = parseSaveData(rawData);
-            rootNodes = parsed.roots;
-            flatItems = parsed.items;
-            // Reset path if current folder no longer exists
-            if (currentPath.length > 0) {
-                const topTitle = currentPath[currentPath.length - 1].title;
-                const stillExists = flatItems.find(i => i.title === topTitle);
-                if (!stillExists) currentPath = [];
-            }
-            render();
-
-            statusIndicator.classList.remove('opacity-0');
-            clearTimeout(saveTimeout);
-            saveTimeout = setTimeout(() => {
-                statusIndicator.classList.add('opacity-0');
-            }, 1500);
-        }
-
-        function handleSaveDataChanged() {
-            const rawData = dataInput.value;
-            applySaveDataChange(rawData);
-
-            // Capture immediate snapshot on big edits/newlines, otherwise debounce typing bursts
-            const lastSnapshot = undoStack.length > 0 ? undoStack[undoStack.length - 1] : '';
-            const delta = Math.abs(rawData.length - lastSnapshot.length);
-
-            clearTimeout(undoDebounceTimer);
-            if (delta > 1 || rawData.endsWith('\n')) {
-                pushUndoSnapshot(rawData);
-            } else {
-                redoStack = [];
-                updateUndoRedoButtons();
-                undoDebounceTimer = setTimeout(() => {
-                    pushUndoSnapshot(dataInput.value);
-                }, 400);
-            }
-        }
-
-        // =========================================================================
-        // DICTATION MODE (Web Speech API: "Open", "Navigation", "Go to", "Copy", "Copy Copy")
-        // =========================================================================
-        const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-        async function refreshMicPermissionState() {
-            if (!navigator.permissions || !navigator.permissions.query) return micPermissionState;
-            try {
-                const status = await navigator.permissions.query({ name: 'microphone' });
-                micPermissionState = status.state;
-                status.onchange = () => {
-                    micPermissionState = status.state;
-                    if (micPermissionState === 'granted') {
-                        repromptDetected = false;
-                    }
-                    updateDictationUI();
-                };
-            } catch (e) {
-                // Safari / browsers without microphone permission query support
-                micPermissionState = 'unknown';
-            }
-            return micPermissionState;
-        }
-
-        function canAutoRestartWithoutPrompt() {
-            if (repromptDetected || micPermissionState === 'denied') return false;
-            // Browsers do not persist microphone permissions on local file:/// origins,
-            // so auto-restarting after silence will keep re-prompting the user.
-            if (isFileProtocol) return false;
-            if (micPermissionState === 'granted') return true;
-            // On mobile Safari/Android over HTTPS, permissions API may report 'unknown' even after Allow
-            if (isMobileDevice && window.isSecureContext && micPermissionState === 'unknown') return true;
-            if (micPermissionState === 'prompt' && hasStartedOnceThisSession) return false;
-            return !isFileProtocol;
-        }
-
-        function updateDictationUI(stateText = null) {
-            if (isDictationOn) {
-                const isPaused = pendingGestureResume || dictationPausedToAvoidPrompt;
-                dictationStatusBar.classList.remove('hidden');
-
-                if (isPaused) {
-                    dictationBtn.classList.add('bg-amber-500/20', 'text-amber-600', 'dark:text-amber-400');
-                    dictationBtn.classList.remove('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400', 'mic-active-pulse', 'text-slate-500', 'dark:text-slate-400');
-                    dictationResumeBtn.classList.remove('hidden');
-                    dictationDot.className = 'w-2 h-2 rounded-full bg-amber-400 shrink-0';
-
-                    if (stateText) {
-                        dictationStatusText.textContent = stateText;
-                    } else if (dictationPausedToAvoidPrompt) {
-                        dictationStatusText.textContent = isFileProtocol
-                            ? 'Paused after silence (local file:// browsers re-ask on auto-restart)'
-                            : 'Mic paused after silence — tap Resume Mic to listen again';
-                    } else {
-                        dictationStatusText.textContent = 'Dictation ready — tap Resume Mic to start listening';
-                    }
-                } else {
-                    dictationBtn.classList.add('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400', 'mic-active-pulse');
-                    dictationBtn.classList.remove('bg-amber-500/20', 'text-amber-600', 'dark:text-amber-400', 'text-slate-500', 'dark:text-slate-400');
-                    dictationResumeBtn.classList.add('hidden');
-
-                    if (dictationWaitingMode === 'open') {
-                        dictationDot.className = 'w-2 h-2 rounded-full bg-emerald-400 animate-pulse shrink-0';
-                        dictationStatusText.textContent = 'Heard trigger — say the link name to open...';
-                    } else if (dictationWaitingMode === 'copy') {
-                        dictationDot.className = 'w-2 h-2 rounded-full bg-indigo-400 animate-pulse shrink-0';
-                        dictationStatusText.textContent = 'Heard "Copy" — say item to add (or "Copy" again)...';
-                    } else {
-                        dictationDot.className = 'w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0';
-                        dictationStatusText.textContent = stateText || 'Listening — say "Open", "Copy", or "Copy Copy"';
-                    }
-                }
-            } else {
-                dictationBtn.classList.remove('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400', 'bg-amber-500/20', 'text-amber-600', 'dark:text-amber-400', 'mic-active-pulse');
-                dictationBtn.classList.add('text-slate-500', 'dark:text-slate-400');
-                dictationStatusBar.classList.add('hidden');
-                dictationResumeBtn.classList.add('hidden');
-                dictationTranscript.textContent = '';
-            }
-        }
-
-        function findTopLinkMatch(spokenQuery) {
-            const cleanQuery = spokenQuery.replace(/[.,!?;:]+$/g, '').trim();
-            if (!cleanQuery) return null;
-
-            const linkableItems = flatItems.filter(item => item.link && item.link.trim().length > 0);
-            const scored = linkableItems
-                .map(item => ({ item, score: calculateSearchScore(item, cleanQuery) }))
-                .filter(entry => entry.score > 0)
-                .sort((a, b) => b.score - a.score);
-
-            return scored.length > 0 ? scored[0].item : null;
-        }
-
-        function executeDictationOpen(spokenQuery) {
-            const cleanQuery = spokenQuery.replace(/[.,!?;:]+$/g, '').trim();
-            if (!cleanQuery) return;
-
-            const topMatch = findTopLinkMatch(cleanQuery);
-            if (topMatch) {
-                showToast(`🎙️ Opening "${escapeHtml(topMatch.title)}"`);
-                openLink(topMatch.link, topMatch);
-            } else {
-                showToast(`🎙️ No match found for "${escapeHtml(cleanQuery)}"`);
-            }
-        }
-
-        async function executeDictationCopy(spokenQuery, alsoCopyToSystem = false) {
-            const cleanQuery = spokenQuery.replace(/[.,!?;:]+$/g, '').trim();
-            if (!cleanQuery) return;
-
-            // Prefer matching a saved launcher link; otherwise store the dictated phrase directly
-            const topMatch = findTopLinkMatch(cleanQuery);
-            const valueToStore = topMatch ? formatUrl(topMatch.link) : cleanQuery;
-            const titleToStore = topMatch ? topMatch.title : '';
-
-            setAppClipboard(valueToStore, titleToStore);
-
-            if (alsoCopyToSystem) {
-                await copyFromAppClipboard('🎙️📋');
-            } else {
-                const label = titleToStore || valueToStore;
-                const shortLabel = label.length > 42 ? label.slice(0, 42) + '…' : label;
-                showToast(`🎙️ Added "${escapeHtml(shortLabel)}" to App Clipboard`);
-            }
-        }
-
-        function armDictationWaiting(mode) {
-            dictationWaitingMode = mode;
-            updateDictationUI();
-            clearTimeout(dictationWaitTimeout);
-            dictationWaitTimeout = setTimeout(() => {
-                dictationWaitingMode = null;
-                updateDictationUI();
-            }, 6000);
-        }
-
-        function processDictationTranscript(rawTranscript) {
-            const cleaned = rawTranscript.trim();
-            if (!cleaned) return;
-
-            // Prevent duplicate execution if mobile fires both interim settle & onend
-            const now = Date.now();
-            if (cleaned.toLowerCase() === lastProcessedTranscript && (now - lastProcessedTime) < 1200) {
-                return;
-            }
-            lastProcessedTranscript = cleaned.toLowerCase();
-            lastProcessedTime = now;
-
-            // Handle follow-up phrase after a standalone wake word ("Open" or "Copy")
-            if (dictationWaitingMode === 'open') {
-                dictationWaitingMode = null;
-                clearTimeout(dictationWaitTimeout);
-                updateDictationUI();
-                const stripped = cleaned.replace(/^(?:open|navigation|go\s+to)\b\s*/i, '').trim() || cleaned;
-                executeDictationOpen(stripped);
-                return;
-            }
-
-            if (dictationWaitingMode === 'copy') {
-                dictationWaitingMode = null;
-                clearTimeout(dictationWaitTimeout);
-                updateDictationUI();
-
-                // If user paused between saying "copy" and "copy [something]"
-                const secondCopyMatch = cleaned.match(/^copy\b(?:\s+(.*))?$/i);
-                if (secondCopyMatch) {
-                    const extra = (secondCopyMatch[1] || '').trim();
-                    if (extra) {
-                        executeDictationCopy(extra, true);
-                    } else {
-                        copyFromAppClipboard('🎙️📋');
-                    }
-                } else {
-                    executeDictationCopy(cleaned, false);
-                }
-                return;
-            }
-
-            // Left-to-right trigger scan: matches earliest command cleanly ("copy copy" before "copy")
-            const commandRegex = /\b(copy\s+copy|copy|open|navigation|go\s+to)\b(?:\s+(.*))?$/i;
-            const match = cleaned.match(commandRegex);
-            if (!match) return;
-
-            const command = match[1].toLowerCase().replace(/\s+/g, ' ');
-            const remainder = (match[2] || '').trim();
-
-            if (command === 'copy copy') {
-                if (remainder.length > 0) {
-                    executeDictationCopy(remainder, true);
-                } else {
-                    copyFromAppClipboard('🎙️📋');
-                }
-                return;
-            }
-
-            if (command === 'copy') {
-                if (remainder.length > 0) {
-                    executeDictationCopy(remainder, false);
-                } else {
-                    armDictationWaiting('copy');
-                }
-                return;
-            }
-
-            // "open", "navigation", or "go to"
-            if (remainder.length > 0) {
-                executeDictationOpen(remainder);
-            } else {
-                armDictationWaiting('open');
-            }
-        }
-
-        function teardownSpeechRecognition() {
-            if (!speechRecognition) return;
-            try {
-                speechRecognition.onstart = null;
-                speechRecognition.onresult = null;
-                speechRecognition.onerror = null;
-                speechRecognition.onend = null;
-                speechRecognition.abort();
-            } catch (e) {}
-            speechRecognition = null;
-        }
-
-        function startDictation({ isAutoRestart = false } = {}) {
-            if (!SpeechRecognitionAPI) {
-                isDictationOn = false;
-                localStorage.setItem(STORAGE_KEYS.DICTATION, 'false');
-                updateDictationUI();
-                showToast(
-                    isIOS
-                        ? 'Voice dictation on iOS requires Safari (iOS Chrome/Firefox block Web Speech).'
-                        : 'Speech recognition is not supported in this browser.',
-                    4000
-                );
-                return;
-            }
-
-            if (!window.isSecureContext && !isFileProtocol) {
-                isDictationOn = false;
-                localStorage.setItem(STORAGE_KEYS.DICTATION, 'false');
-                updateDictationUI();
-                showToast('Mobile browsers require HTTPS for microphone dictation.', 3800);
-                return;
-            }
-
-            if (isRecognitionRunning || isStartingRecognition) return;
-
-            // Never restart in the background while the tab is hidden
-            if (document.hidden) {
-                pausedForVisibility = true;
-                return;
-            }
-
-            // Prevent repeated browser permission prompts if this origin does not persist mic grants
-            if (isAutoRestart && !canAutoRestartWithoutPrompt()) {
-                dictationPausedToAvoidPrompt = true;
-                updateDictationUI();
-                return;
-            }
-
-            // On mobile, dismiss the soft keyboard so it does not interrupt microphone capture
-            if (isMobileDevice && (document.activeElement === searchInput || document.activeElement === dataInput)) {
-                document.activeElement.blur();
-            }
-
-            try {
-                // On mobile (iOS Safari & Android Chrome), creating a fresh instance avoids stale .start() hangs
-                if (isMobileDevice || !speechRecognition) {
-                    teardownSpeechRecognition();
-                    speechRecognition = new SpeechRecognitionAPI();
-                    // Mobile browsers break or duplicate transcripts with continuous=true; use clean single-utterance loops
-                    speechRecognition.continuous = !isMobileDevice;
-                    speechRecognition.interimResults = true;
-                    speechRecognition.maxAlternatives = 1;
-                    speechRecognition.lang = navigator.language || 'en-US';
-
-                    speechRecognition.onstart = () => {
-                        const startDelay = Date.now() - recognitionStartAttemptTime;
-                        // Desktop only: mobile audio hardware naturally takes 1-2s to spin up
-                        if (!isMobileDevice && isAutoRestartAttempt && startDelay > 1400) {
-                            repromptDetected = true;
-                        }
-                        hasStartedOnceThisSession = true;
-                        isRecognitionRunning = true;
-                        isStartingRecognition = false;
-                        pendingGestureResume = false;
-                        dictationPausedToAvoidPrompt = false;
-                        pausedForVisibility = false;
-                        pendingMobileInterim = '';
-                        finalHandledInSession = false;
-                        clearTimeout(mobileInterimTimer);
-                        refreshMicPermissionState();
-                        updateDictationUI();
-                    };
-
-                    speechRecognition.onresult = (event) => {
-                        let interimText = '';
-                        let finalText = '';
-
-                        const startIndex = isMobileDevice ? 0 : event.resultIndex;
-                        for (let i = startIndex; i < event.results.length; i++) {
-                            const result = event.results[i];
-                            const transcript = result[0].transcript;
-                            if (result.isFinal) {
-                                finalText += transcript + ' ';
-                            } else {
-                                interimText += transcript;
-                            }
-                        }
-
-                        if (finalText.trim()) {
-                            finalHandledInSession = true;
-                            pendingMobileInterim = '';
-                            clearTimeout(mobileInterimTimer);
-                            dictationTranscript.textContent = `"${finalText.trim()}"`;
-                            processDictationTranscript(finalText);
-                        } else if (interimText.trim()) {
-                            dictationTranscript.textContent = `"${interimText.trim()}..."`;
-                            if (isMobileDevice) {
-                                // iOS Safari frequently omits isFinal; process once speech settles
-                                pendingMobileInterim = interimText.trim();
-                                clearTimeout(mobileInterimTimer);
-                                mobileInterimTimer = setTimeout(() => {
-                                    if (pendingMobileInterim && !finalHandledInSession) {
-                                        const toProcess = pendingMobileInterim;
-                                        pendingMobileInterim = '';
-                                        finalHandledInSession = true;
-                                        dictationTranscript.textContent = `"${toProcess}"`;
-                                        processDictationTranscript(toProcess);
-                                        if (speechRecognition && isRecognitionRunning) {
-                                            try { speechRecognition.stop(); } catch (e) {}
-                                        }
-                                    }
-                                }, 1400);
-                            }
-                        }
-                    };
-
-                    speechRecognition.onerror = (event) => {
-                        isRecognitionRunning = false;
-                        isStartingRecognition = false;
-                        clearTimeout(mobileInterimTimer);
-
-                        if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
-                            refreshMicPermissionState().then(() => {
-                                if (micPermissionState === 'denied') {
-                                    isDictationOn = false;
-                                    localStorage.setItem(STORAGE_KEYS.DICTATION, 'false');
-                                    showToast('Microphone access was blocked in browser settings.', 3400);
-                                    updateDictationUI();
-                                } else {
-                                    pendingGestureResume = true;
-                                    const hint = isIOS
-                                        ? 'Tap Resume Mic (on iPhone/iPad, ensure Safari & Settings > Keyboard > Dictation are enabled)'
-                                        : 'Tap Resume Mic to allow listening';
-                                    updateDictationUI(hint);
-                                }
-                            });
-                        } else if (event.error === 'audio-capture') {
-                            pendingGestureResume = true;
-                            updateDictationUI('No microphone detected — tap Resume Mic to retry');
-                        } else if (event.error === 'network') {
-                            pendingGestureResume = true;
-                            updateDictationUI('Speech service needs internet — tap Resume Mic');
-                        } else if (event.error !== 'no-speech' && event.error !== 'aborted') {
-                            updateDictationUI(`Mic paused (${event.error})`);
-                        }
-                    };
-
-                    speechRecognition.onend = () => {
-                        isRecognitionRunning = false;
-                        isStartingRecognition = false;
-                        clearTimeout(mobileInterimTimer);
-
-                        // Flush any final interim speech on iOS Safari if it ended without setting isFinal
-                        if (isMobileDevice && pendingMobileInterim && !finalHandledInSession) {
-                            const toProcess = pendingMobileInterim;
-                            pendingMobileInterim = '';
-                            finalHandledInSession = true;
-                            dictationTranscript.textContent = `"${toProcess}"`;
-                            processDictationTranscript(toProcess);
-                        }
-
-                        if (!isDictationOn || pendingGestureResume || dictationPausedToAvoidPrompt) {
-                            return;
-                        }
-
-                        // Wait until the user comes back to this tab instead of restarting in the background
-                        if (document.hidden) {
-                            pausedForVisibility = true;
-                            return;
-                        }
-
-                        // Only auto-restart if the browser persists mic permission (so it won't ask again)
-                        if (!canAutoRestartWithoutPrompt()) {
-                            dictationPausedToAvoidPrompt = true;
-                            updateDictationUI();
-                            return;
-                        }
-
-                        clearTimeout(dictationRestartTimeout);
-                        dictationRestartTimeout = setTimeout(() => {
-                            if (isDictationOn && !isRecognitionRunning && !isStartingRecognition && !document.hidden) {
-                                startDictation({ isAutoRestart: true });
-                            }
-                        }, isMobileDevice ? 450 : 350);
-                    };
-                }
-
-                isStartingRecognition = true;
-                recognitionStartAttemptTime = Date.now();
-                isAutoRestartAttempt = isAutoRestart;
-                speechRecognition.start();
-            } catch (err) {
-                isRecognitionRunning = false;
-                isStartingRecognition = false;
-                pendingGestureResume = true;
-                updateDictationUI();
-            }
-        }
-
-        function stopDictation() {
-            clearTimeout(dictationRestartTimeout);
-            clearTimeout(dictationWaitTimeout);
-            clearTimeout(mobileInterimTimer);
-            dictationWaitingMode = null;
-            pendingMobileInterim = '';
-            pendingGestureResume = false;
-            dictationPausedToAvoidPrompt = false;
-            pausedForVisibility = false;
-            isStartingRecognition = false;
-
-            if (speechRecognition) {
-                try {
-                    speechRecognition.stop();
-                } catch (e) {}
-            }
-            if (isMobileDevice) {
-                teardownSpeechRecognition();
-            }
-            isRecognitionRunning = false;
-            updateDictationUI();
-        }
-
-        function toggleDictation() {
-            if (!SpeechRecognitionAPI) {
-                showToast(
-                    isIOS
-                        ? 'Voice dictation on iOS requires Safari.'
-                        : 'Voice dictation is not supported in this browser.',
-                    3500
-                );
-                return;
-            }
-            isDictationOn = !isDictationOn;
-            localStorage.setItem(STORAGE_KEYS.DICTATION, isDictationOn ? 'true' : 'false');
-
-            if (isDictationOn) {
-                pendingGestureResume = false;
-                dictationPausedToAvoidPrompt = false;
-                repromptDetected = false;
-                startDictation({ isAutoRestart: false });
-                showToast('🎙️ Dictation Mode ON');
-            } else {
-                stopDictation();
-                showToast('🎙️ Dictation Mode OFF');
-            }
-        }
-
-        // =========================================================================
-        // MODE TOGGLE & EVENT LISTENERS
-        // =========================================================================
-        function toggleViewMode() {
-            closeHistoryPopover();
-            isFocusMode = !isFocusMode;
-            localStorage.setItem(STORAGE_KEYS.FOCUS_MODE, isFocusMode ? 'true' : 'false');
-            render();
-            if (!isMobileDevice) {
-                searchInput.focus();
-            }
-        }
-
-        function triggerEnterLaunch() {
+        function handleEnterLaunch() {
             const query = searchInput.value.trim();
 
+            // Inside a folder with an empty search box: open/copy folder's link
             if (!isFocusMode && currentPath.length > 0 && query.length === 0) {
                 const currentFolder = currentPath[currentPath.length - 1];
-                const folderTarget = getFirstLinkInFolder(currentFolder);
-                if (folderTarget) {
+                const folderLink = currentFolder.link || getFirstLinkInFolder(currentFolder);
+                if (folderLink) {
                     if (isCopyLinkMode) {
-                        copyItemLink(folderTarget.link, folderTarget);
+                        copyItemLink(folderLink, currentFolder);
                     } else {
-                        openLink(folderTarget.link, folderTarget);
+                        openLink(folderLink, currentFolder);
                     }
                     return;
                 }
@@ -2018,7 +1432,7 @@
                     justOpenedFolderByEnter = true;
                     render();
                 } else if (topMatch.link) {
-                    if (!isFocusMode && isCopyLinkMode) {
+                    if (isCopyLinkMode) {
                         copyItemLink(topMatch.link, topMatch);
                     } else {
                         openLink(topMatch.link, topMatch);
@@ -2027,22 +1441,587 @@
             }
         }
 
-        modeToggleBtn.addEventListener('click', toggleViewMode);
+        // =========================================================================
+        // SAVE DATA PERSISTENCE, UNDO / REDO, COPY & PASTE
+        // =========================================================================
+        let saveIndicatorTimer = null;
+
+        function persistSaveData(rawData, showSavedBadge = true) {
+            try {
+                localStorage.setItem(STORAGE_KEYS.DATA, rawData);
+            } catch (e) {}
+
+            const parsed = parseSaveData(rawData);
+            rootNodes = parsed.roots;
+            flatItems = parsed.items;
+
+            // Keep currentPath valid if folders were edited or removed
+            if (currentPath.length > 0) {
+                const titles = currentPath.map(n => n.title);
+                const rebuiltPath = [];
+                let searchLevel = rootNodes;
+                for (const title of titles) {
+                    const found = searchLevel.find(n => n.title === title);
+                    if (!found) break;
+                    rebuiltPath.push(found);
+                    searchLevel = found.children || [];
+                }
+                currentPath = rebuiltPath;
+            }
+
+            render();
+
+            if (showSavedBadge) {
+                statusIndicator.classList.remove('opacity-0');
+                clearTimeout(saveIndicatorTimer);
+                saveIndicatorTimer = setTimeout(() => {
+                    statusIndicator.classList.add('opacity-0');
+                }, 1400);
+            }
+        }
+
+        function updateUndoRedoButtons() {
+            const canUndo = undoStack.length > 1;
+            const canRedo = redoStack.length > 0;
+
+            undoDataBtn.disabled = !canUndo;
+            redoDataBtn.disabled = !canRedo;
+
+            undoDataBtn.classList.toggle('opacity-40', !canUndo);
+            undoDataBtn.classList.toggle('cursor-not-allowed', !canUndo);
+            redoDataBtn.classList.toggle('opacity-40', !canRedo);
+            redoDataBtn.classList.toggle('cursor-not-allowed', !canRedo);
+        }
+
+        function pushUndoSnapshot(value) {
+            if (undoStack.length === 0 || undoStack[undoStack.length - 1] !== value) {
+                undoStack.push(value);
+                if (undoStack.length > 100) {
+                    undoStack.shift();
+                }
+                redoStack = [];
+                updateUndoRedoButtons();
+            }
+        }
+
+        function undoSaveData() {
+            clearTimeout(undoDebounceTimer);
+            // Capture any unsaved pending edit before undoing
+            if (undoStack.length > 0 && undoStack[undoStack.length - 1] !== dataInput.value) {
+                undoStack.push(dataInput.value);
+            }
+            if (undoStack.length <= 1) return;
+
+            const current = undoStack.pop();
+            redoStack.push(current);
+            const previous = undoStack[undoStack.length - 1];
+
+            dataInput.value = previous;
+            persistSaveData(previous, true);
+            updateUndoRedoButtons();
+        }
+
+        function redoSaveData() {
+            clearTimeout(undoDebounceTimer);
+            if (redoStack.length === 0) return;
+
+            const nextVal = redoStack.pop();
+            undoStack.push(nextVal);
+
+            dataInput.value = nextVal;
+            persistSaveData(nextVal, true);
+            updateUndoRedoButtons();
+        }
+
+        async function copySaveData() {
+            const ok = await copyTextToSystemClipboard(dataInput.value, '📋 Save Data copied to clipboard');
+            if (ok) {
+                copyBtnLabel.textContent = 'Copied!';
+                setTimeout(() => {
+                    copyBtnLabel.textContent = 'Copy';
+                }, 1300);
+            }
+        }
+
+        async function pasteSaveData() {
+            if (!navigator.clipboard || !navigator.clipboard.readText) {
+                showToast('Clipboard paste blocked here — tap inside Save Data and press Ctrl/Cmd+V.', 3200);
+                dataInput.focus();
+                return;
+            }
+            try {
+                const text = await navigator.clipboard.readText();
+                if (typeof text === 'string') {
+                    clearTimeout(undoDebounceTimer);
+                    pushUndoSnapshot(dataInput.value);
+                    dataInput.value = text;
+                    pushUndoSnapshot(text);
+                    persistSaveData(text, true);
+
+                    pasteBtnLabel.textContent = 'Pasted!';
+                    setTimeout(() => {
+                        pasteBtnLabel.textContent = 'Paste';
+                    }, 1300);
+                    showToast('📋 Pasted into Save Data');
+                }
+            } catch (e) {
+                showToast('Browser blocked automatic paste — tap Save Data and paste manually.', 3200);
+                dataInput.focus();
+            }
+        }
+
+        // =========================================================================
+        // DICTATION MODE (Desktop & Mobile Fixes + Voice Commands)
+        // =========================================================================
+        const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+        async function refreshMicPermissionState() {
+            if (!navigator.permissions || !navigator.permissions.query) {
+                return micPermissionState;
+            }
+            try {
+                const status = await navigator.permissions.query({ name: 'microphone' });
+                micPermissionState = status.state; // 'granted', 'prompt', 'denied'
+                status.onchange = () => {
+                    micPermissionState = status.state;
+                };
+            } catch (e) {}
+            return micPermissionState;
+        }
+
+        function updateDictationUI(state = 'off', statusMsg = '') {
+            if (!isDictationOn || state === 'off') {
+                dictationBtn.classList.remove('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400', 'mic-active-pulse');
+                dictationBtn.classList.add('text-slate-500', 'dark:text-slate-400');
+                dictationStatusBar.classList.add('hidden');
+                dictationResumeBtn.classList.add('hidden');
+                dictationTranscript.textContent = '';
+                return;
+            }
+
+            dictationStatusBar.classList.remove('hidden');
+            dictationBtn.classList.remove('text-slate-500', 'dark:text-slate-400');
+            dictationBtn.classList.add('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400');
+
+            if (state === 'listening') {
+                dictationBtn.classList.add('mic-active-pulse');
+                dictationDot.className = 'w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0';
+                dictationResumeBtn.classList.add('hidden');
+                dictationStatusText.textContent = statusMsg || 'Listening — say "Open", "Navigation", "Go to", "Copy", or "Copy Copy"';
+            } else if (state === 'paused') {
+                dictationBtn.classList.remove('mic-active-pulse');
+                dictationDot.className = 'w-2 h-2 rounded-full bg-amber-500 shrink-0';
+                dictationResumeBtn.classList.remove('hidden');
+                dictationStatusText.textContent = statusMsg || 'Dictation paused to avoid repeat permission prompts';
+            } else if (state === 'error') {
+                dictationBtn.classList.remove('mic-active-pulse');
+                dictationDot.className = 'w-2 h-2 rounded-full bg-slate-400 shrink-0';
+                dictationResumeBtn.classList.remove('hidden');
+                dictationStatusText.textContent = statusMsg || 'Tap Resume Mic to start listening';
+            }
+        }
+
+        function clearDictationWait() {
+            dictationWaitingMode = null;
+            clearTimeout(dictationWaitTimeout);
+            dictationWaitTimeout = null;
+        }
+
+        function setDictationWaiting(mode) {
+            clearDictationWait();
+            dictationWaitingMode = mode;
+            const labels = {
+                open: 'Heard trigger — say what to open...',
+                copy: 'Heard "Copy" — say what to add to App Clipboard...',
+                copy_copy: 'Heard "Copy Copy" — say what to add & copy...'
+            };
+            updateDictationUI('listening', labels[mode] || 'Listening for command...');
+
+            dictationWaitTimeout = setTimeout(() => {
+                if (dictationWaitingMode === 'copy_copy') {
+                    // User said just "copy copy" with nothing after
+                    copyFromAppClipboard('🎙️');
+                }
+                clearDictationWait();
+                if (isDictationOn && isRecognitionRunning) {
+                    updateDictationUI('listening');
+                }
+            }, 3500);
+        }
+
+        function executeDictationOpen(query) {
+            const cleaned = (query || '').trim();
+            if (!cleaned) return;
+
+            const match = findBestLinkMatch(cleaned);
+            if (!match) {
+                showToast(`🎙️ No match for "${escapeHtml(cleaned)}"`);
+                return;
+            }
+
+            if (isCopyLinkMode) {
+                copyItemLink(match.link, match);
+            } else {
+                showToast(`🎙️ Opening "${escapeHtml(match.title)}"`);
+                openLink(match.link, match);
+            }
+        }
+
+        async function executeDictationCopy(query, alsoCopyToSystem = false) {
+            const cleaned = (query || '').trim();
+            if (!cleaned) {
+                if (alsoCopyToSystem) {
+                    await copyFromAppClipboard('🎙️');
+                }
+                return;
+            }
+
+            const match = findBestLinkMatch(cleaned);
+            let valueToStore = cleaned;
+            let titleToStore = '';
+
+            if (match && match.link) {
+                valueToStore = formatUrl(match.link);
+                titleToStore = match.title;
+            }
+
+            setAppClipboard(valueToStore, titleToStore);
+
+            if (alsoCopyToSystem) {
+                await copyFromAppClipboard('🎙️');
+            } else {
+                const label = titleToStore || valueToStore;
+                const shortLabel = label.length > 40 ? label.slice(0, 40) + '…' : label;
+                showToast(`🎙️ Added "${escapeHtml(shortLabel)}" to App Clipboard`);
+            }
+        }
+
+        function processDictationTranscript(rawTranscript) {
+            const cleaned = (rawTranscript || '').trim();
+            if (!cleaned) return;
+
+            const normalized = cleaned.toLowerCase().replace(/[.,!?;:]+/g, ' ').replace(/\s+/g, ' ').trim();
+            if (!normalized) return;
+
+            // Prevent duplicate firing from overlapping interim/final mobile results
+            const now = Date.now();
+            if (normalized === lastProcessedTranscript && (now - lastProcessedTime) < 1600) {
+                return;
+            }
+            lastProcessedTranscript = normalized;
+            lastProcessedTime = now;
+
+            dictationTranscript.textContent = `"${cleaned}"`;
+
+            // If we were waiting for the second half of a spoken command
+            if (dictationWaitingMode) {
+                const mode = dictationWaitingMode;
+                clearDictationWait();
+                if (mode === 'open') {
+                    executeDictationOpen(normalized);
+                } else if (mode === 'copy') {
+                    executeDictationCopy(normalized, false);
+                } else if (mode === 'copy_copy') {
+                    executeDictationCopy(normalized, true);
+                }
+                if (isDictationOn && isRecognitionRunning) {
+                    updateDictationUI('listening');
+                }
+                return;
+            }
+
+            // 1. Check "copy copy" first (so "copy" doesn't swallow it)
+            const copyCopyMatch = normalized.match(/\bcopy\s+copy(?:\s+(.*))?$/i);
+            if (copyCopyMatch) {
+                const remainder = (copyCopyMatch[1] || '').trim();
+                if (remainder.length > 0) {
+                    executeDictationCopy(remainder, true);
+                } else {
+                    copyFromAppClipboard('🎙️');
+                }
+                return;
+            }
+
+            // 2. Check "copy" (add to App Clipboard)
+            const copyMatch = normalized.match(/\bcopy(?:\s+(.*))?$/i);
+            if (copyMatch) {
+                const remainder = (copyMatch[1] || '').trim();
+                if (remainder.length > 0) {
+                    executeDictationCopy(remainder, false);
+                } else {
+                    setDictationWaiting('copy');
+                }
+                return;
+            }
+
+            // 3. Check "open", "navigation", or "go to"
+            const openMatch = normalized.match(/\b(?:open|navigation|go to)(?:\s+(.*))?$/i);
+            if (openMatch) {
+                const remainder = (openMatch[1] || '').trim();
+                if (remainder.length > 0) {
+                    executeDictationOpen(remainder);
+                } else {
+                    setDictationWaiting('open');
+                }
+            }
+        }
+
+        function canAutoRestartSafely() {
+            if (!isDictationOn || document.hidden) return false;
+            if (isFileProtocol && micPermissionState !== 'granted') return false;
+            if (repromptDetected) return false;
+            return true;
+        }
+
+        function stopDictation(turnOffPreference = false) {
+            clearTimeout(dictationRestartTimeout);
+            clearTimeout(mobileInterimTimer);
+            clearDictationWait();
+
+            if (turnOffPreference) {
+                isDictationOn = false;
+                try {
+                    localStorage.setItem(STORAGE_KEYS.DICTATION, 'false');
+                } catch (e) {}
+            }
+
+            isStartingRecognition = false;
+            isRecognitionRunning = false;
+
+            if (speechRecognition) {
+                try {
+                    speechRecognition.onstart = null;
+                    speechRecognition.onresult = null;
+                    speechRecognition.onerror = null;
+                    speechRecognition.onend = null;
+                    speechRecognition.abort();
+                } catch (e) {}
+                speechRecognition = null;
+            }
+
+            if (turnOffPreference) {
+                dictationPausedToAvoidPrompt = false;
+                pausedForVisibility = false;
+                updateDictationUI('off');
+            }
+        }
+
+        async function startDictation(isManualTrigger = false) {
+            if (!SpeechRecognitionAPI) {
+                showToast('🎙️ Speech Recognition is not supported in this browser (use Safari on iOS or Chrome/Edge).', 4000);
+                stopDictation(true);
+                return;
+            }
+
+            if (isRecognitionRunning || isStartingRecognition) return;
+            if (document.hidden) {
+                pausedForVisibility = true;
+                return;
+            }
+
+            await refreshMicPermissionState();
+
+            // On reload, avoid auto-prompting if browser has not persisted permission
+            if (!isManualTrigger && !hasStartedOnceThisSession && micPermissionState !== 'granted') {
+                dictationPausedToAvoidPrompt = true;
+                pendingGestureResume = true;
+                updateDictationUI('paused', 'Dictation ready — tap Resume Mic to start');
+                return;
+            }
+
+            // Dismiss mobile virtual keyboard so iOS/Android microphone audio session activates cleanly
+            if (isMobileDevice && document.activeElement === searchInput) {
+                searchInput.blur();
+            }
+
+            clearTimeout(dictationRestartTimeout);
+            clearTimeout(mobileInterimTimer);
+            pendingMobileInterim = '';
+            finalHandledInSession = false;
+
+            const recognition = new SpeechRecognitionAPI();
+            // Mobile Chrome/Safari hang on continuous=true; use single-utterance sessions on mobile
+            recognition.continuous = !isMobileDevice;
+            recognition.interimResults = true;
+            recognition.maxAlternatives = 1;
+            recognition.lang = navigator.language || 'en-US';
+
+            isStartingRecognition = true;
+            isAutoRestartAttempt = !isManualTrigger;
+            recognitionStartAttemptTime = Date.now();
+            speechRecognition = recognition;
+
+            recognition.onstart = () => {
+                isStartingRecognition = false;
+                isRecognitionRunning = true;
+                hasStartedOnceThisSession = true;
+                dictationPausedToAvoidPrompt = false;
+                pausedForVisibility = false;
+
+                // If an automatic restart took unusually long, browser likely re-prompted user
+                const elapsed = Date.now() - recognitionStartAttemptTime;
+                if (isAutoRestartAttempt && elapsed > 1800 && micPermissionState !== 'granted') {
+                    repromptDetected = true;
+                }
+
+                updateDictationUI('listening');
+            };
+
+            recognition.onresult = (event) => {
+                let finalChunk = '';
+                let interimChunk = '';
+
+                for (let i = event.resultIndex; i < event.results.length; i++) {
+                    const res = event.results[i];
+                    const transcript = res[0] ? res[0].transcript : '';
+                    if (res.isFinal) {
+                        finalChunk += ' ' + transcript;
+                    } else {
+                        interimChunk += ' ' + transcript;
+                    }
+                }
+
+                if (interimChunk.trim()) {
+                    dictationTranscript.textContent = interimChunk.trim();
+                }
+
+                if (finalChunk.trim()) {
+                    clearTimeout(mobileInterimTimer);
+                    pendingMobileInterim = '';
+                    finalHandledInSession = true;
+                    processDictationTranscript(finalChunk.trim());
+                } else if (isMobileDevice && interimChunk.trim()) {
+                    // iOS Safari sometimes never marks results isFinal; settle after a brief pause
+                    pendingMobileInterim = interimChunk.trim();
+                    clearTimeout(mobileInterimTimer);
+                    mobileInterimTimer = setTimeout(() => {
+                        if (pendingMobileInterim && !finalHandledInSession) {
+                            const toProcess = pendingMobileInterim;
+                            pendingMobileInterim = '';
+                            finalHandledInSession = true;
+                            processDictationTranscript(toProcess);
+                        }
+                    }, 1150);
+                }
+            };
+
+            recognition.onerror = (event) => {
+                isStartingRecognition = false;
+                const err = event.error;
+
+                if (err === 'not-allowed' || err === 'service-not-allowed') {
+                    micPermissionState = 'denied';
+                    dictationPausedToAvoidPrompt = true;
+                    updateDictationUI('error', isIOS
+                        ? 'Mic blocked — enable Safari Mic & Keyboard Dictation in iOS Settings'
+                        : 'Microphone permission denied — allow mic access and tap Resume Mic');
+                    return;
+                }
+
+                if (err === 'no-speech' || err === 'aborted') {
+                    // Handled gracefully in onend
+                    return;
+                }
+
+                if (err === 'audio-capture') {
+                    updateDictationUI('error', 'No microphone detected — tap Resume Mic to retry');
+                }
+            };
+
+            recognition.onend = () => {
+                isStartingRecognition = false;
+                isRecognitionRunning = false;
+
+                // Flush unsettled mobile interim text when recognition stops
+                if (isMobileDevice && pendingMobileInterim && !finalHandledInSession) {
+                    clearTimeout(mobileInterimTimer);
+                    const toProcess = pendingMobileInterim;
+                    pendingMobileInterim = '';
+                    finalHandledInSession = true;
+                    processDictationTranscript(toProcess);
+                }
+
+                if (!isDictationOn) {
+                    updateDictationUI('off');
+                    return;
+                }
+
+                if (document.hidden) {
+                    pausedForVisibility = true;
+                    updateDictationUI('paused', 'Paused while tab is in background');
+                    return;
+                }
+
+                if (micPermissionState === 'denied') {
+                    return;
+                }
+
+                if (canAutoRestartSafely()) {
+                    dictationRestartTimeout = setTimeout(() => {
+                        if (isDictationOn && !document.hidden && !isRecognitionRunning) {
+                            startDictation(false);
+                        }
+                    }, isMobileDevice ? 380 : 250);
+                } else {
+                    dictationPausedToAvoidPrompt = true;
+                    updateDictationUI('paused', 'Paused to avoid repeat permission prompts');
+                }
+            };
+
+            try {
+                recognition.start();
+            } catch (e) {
+                isStartingRecognition = false;
+                isRecognitionRunning = false;
+                updateDictationUI('error', 'Could not start mic — tap Resume Mic');
+            }
+        }
+
+        function toggleDictation() {
+            if (!SpeechRecognitionAPI) {
+                showToast('🎙️ Voice dictation requires Chrome, Edge, or iOS Safari over HTTPS.', 3800);
+                return;
+            }
+
+            if (isDictationOn) {
+                stopDictation(true);
+                showToast('🎙️ Dictation Mode OFF');
+            } else {
+                isDictationOn = true;
+                repromptDetected = false;
+                dictationPausedToAvoidPrompt = false;
+                try {
+                    localStorage.setItem(STORAGE_KEYS.DICTATION, 'true');
+                } catch (e) {}
+                startDictation(true);
+            }
+        }
+
+        // =========================================================================
+        // EVENT LISTENERS
+        // =========================================================================
+        function toggleFocusMode() {
+            isFocusMode = !isFocusMode;
+            try {
+                localStorage.setItem(STORAGE_KEYS.FOCUS_MODE, isFocusMode ? 'true' : 'false');
+            } catch (e) {}
+            render();
+            if (!isMobileDevice) {
+                searchInput.focus();
+            }
+        }
+
+        modeToggleBtn.addEventListener('click', toggleFocusMode);
         themeToggleBtn.addEventListener('click', toggleTheme);
         copyLinkModeBtn.addEventListener('click', toggleCopyLinkMode);
         copyModeIndicator.addEventListener('click', toggleCopyLinkMode);
         appClipboardBtn.addEventListener('click', () => copyFromAppClipboard('📋'));
         dictationBtn.addEventListener('click', toggleDictation);
         dictationResumeBtn.addEventListener('click', () => {
-            pendingGestureResume = false;
-            dictationPausedToAvoidPrompt = false;
             repromptDetected = false;
-            startDictation({ isAutoRestart: false });
+            dictationPausedToAvoidPrompt = false;
+            startDictation(true);
         });
-        undoDataBtn.addEventListener('click', undoSaveData);
-        redoDataBtn.addEventListener('click', redoSaveData);
-        copyDataBtn.addEventListener('click', copySaveData);
-        pasteDataBtn.addEventListener('click', pasteSaveData);
 
         clearSearchBtn.addEventListener('click', () => {
             searchInput.value = '';
@@ -2051,7 +2030,12 @@
             searchInput.focus();
         });
 
-        // Popover menu actions for history items
+        searchInput.addEventListener('input', () => {
+            justOpenedFolderByEnter = false;
+            render();
+        });
+
+        // History 3-dots Popover Controls
         popoverStarBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             if (activePopoverLink) {
@@ -2068,85 +2052,123 @@
             closeHistoryPopover();
         });
 
-        // Dismiss popover when clicking outside or resizing/scrolling
         document.addEventListener('click', (e) => {
             if (!historyMenuPopover.classList.contains('hidden') && !historyMenuPopover.contains(e.target)) {
                 closeHistoryPopover();
             }
         });
+
         window.addEventListener('resize', closeHistoryPopover);
 
-        // Live search filtering
-        searchInput.addEventListener('input', () => {
-            justOpenedFolderByEnter = false;
-            render();
+        // Save Data Editor Events (Auto-save, Undo/Redo, Copy/Paste)
+        dataInput.addEventListener('input', () => {
+            const rawData = dataInput.value;
+            persistSaveData(rawData, true);
+
+            clearTimeout(undoDebounceTimer);
+            undoDebounceTimer = setTimeout(() => {
+                pushUndoSnapshot(dataInput.value);
+            }, 350);
         });
 
-        // Escape clears search when focused in search bar
-        searchInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && searchInput.value) {
-                searchInput.value = '';
-                render();
-            }
+        dataInput.addEventListener('change', () => {
+            persistSaveData(dataInput.value, false);
+            pushUndoSnapshot(dataInput.value);
         });
 
-        // Save Data live updates & keyboard Undo/Redo sync
-        dataInput.addEventListener('input', handleSaveDataChanged);
-        dataInput.addEventListener('change', handleSaveDataChanged);
-        window.addEventListener('beforeunload', () => {
-            try {
-                localStorage.setItem(STORAGE_KEYS.DATA, dataInput.value);
-            } catch (err) {}
-        });
         dataInput.addEventListener('keydown', (e) => {
-            const modKey = e.ctrlKey || e.metaKey;
-            if (!modKey) return;
+            const isMod = e.ctrlKey || e.metaKey;
+            if (!isMod) return;
 
-            if (e.key.toLowerCase() === 'z' && !e.shiftKey) {
+            const key = e.key.toLowerCase();
+            if (key === 'z' && !e.shiftKey) {
                 e.preventDefault();
                 undoSaveData();
-            } else if (e.key.toLowerCase() === 'y' || (e.key.toLowerCase() === 'z' && e.shiftKey)) {
+            } else if (key === 'y' || (key === 'z' && e.shiftKey)) {
                 e.preventDefault();
                 redoSaveData();
             }
         });
 
-        // Global keyboard shortcuts: Tab toggles view mode, Enter launches top result anywhere (outside Save Data)
+        undoDataBtn.addEventListener('click', undoSaveData);
+        redoDataBtn.addEventListener('click', redoSaveData);
+        copyDataBtn.addEventListener('click', copySaveData);
+        pasteDataBtn.addEventListener('click', pasteSaveData);
+
+        window.addEventListener('beforeunload', () => {
+            try {
+                localStorage.setItem(STORAGE_KEYS.DATA, dataInput.value);
+            } catch (e) {}
+        });
+
+        // Global Keyboard Shortcuts (Tab to switch view, Global Enter to launch, Escape to close menus/clear)
         window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                if (!historyMenuPopover.classList.contains('hidden')) {
+                    closeHistoryPopover();
+                    return;
+                }
+                if (searchInput.value.length > 0) {
+                    searchInput.value = '';
+                    render();
+                }
+                return;
+            }
+
             if (e.key === 'Tab') {
-                if (e.repeat || document.activeElement === dataInput) return;
+                if (e.repeat) return;
+                if (document.activeElement === dataInput) return;
                 e.preventDefault();
-                toggleViewMode();
+                toggleFocusMode();
                 return;
             }
 
             if (e.key === 'Enter') {
-                // Never hijack Enter when typing in Save Data or interacting with a focused control button/menu
+                // Allow normal newlines inside Save Data textarea
                 if (document.activeElement === dataInput) return;
-                if (!historyMenuPopover.classList.contains('hidden')) return;
-                if (document.activeElement && document.activeElement.tagName === 'BUTTON') return;
-
+                // Allow focused interactive buttons to activate normally
+                if (document.activeElement && document.activeElement.tagName === 'BUTTON' && document.activeElement !== searchInput) {
+                    return;
+                }
                 e.preventDefault();
-                triggerEnterLaunch();
+                handleEnterLaunch();
             }
         });
 
-        // Automatically refocus search bar when returning to this tab (desktop only to avoid popping mobile keyboard)
+        // Automatically return cursor to search bar when re-entering the tab
+        function focusSearchOnTabReturn() {
+            if (document.hidden) return;
+            if (document.activeElement === dataInput) return;
+            if (isMobileDevice) return;
+            setTimeout(() => {
+                if (!document.hidden && document.activeElement !== dataInput) {
+                    searchInput.focus({ preventScroll: true });
+                }
+            }, 30);
+        }
+
         window.addEventListener('focus', () => {
-            if (!isMobileDevice && document.activeElement !== dataInput) {
-                searchInput.focus();
+            focusSearchOnTabReturn();
+            if (isDictationOn && pausedForVisibility && canAutoRestartSafely()) {
+                startDictation(false);
             }
         });
 
-        // Resume dictation cleanly when returning to the tab (only if browser persists mic permission)
         document.addEventListener('visibilitychange', () => {
-            if (!document.hidden && isDictationOn && pausedForVisibility) {
-                pausedForVisibility = false;
-                if (canAutoRestartWithoutPrompt()) {
-                    startDictation({ isAutoRestart: true });
-                } else {
-                    dictationPausedToAvoidPrompt = true;
-                    updateDictationUI();
+            if (document.hidden) {
+                if (isRecognitionRunning) {
+                    pausedForVisibility = true;
+                    stopDictation(false);
+                    updateDictationUI('paused', 'Paused while tab is in background');
+                }
+            } else {
+                focusSearchOnTabReturn();
+                if (isDictationOn && pausedForVisibility) {
+                    if (canAutoRestartSafely()) {
+                        startDictation(false);
+                    } else {
+                        updateDictationUI('paused', 'Tap Resume Mic to continue listening');
+                    }
                 }
             }
         });
@@ -2156,42 +2178,31 @@
         // =========================================================================
         window.addEventListener('DOMContentLoaded', async () => {
             applyTheme(currentTheme);
-            updateAppClipboardUI();
-            updateCopyLinkModeUI();
 
-            let savedData = defaultSaveData;
-            try {
-                const stored = localStorage.getItem(STORAGE_KEYS.DATA);
-                if (stored !== null) {
-                    savedData = stored;
-                }
-            } catch (err) {
-                console.error('Failed to read saved data:', err);
-            }
-            dataInput.value = savedData;
-            initUndoHistory(savedData);
+            const storedData = safeGetStorage(STORAGE_KEYS.DATA, null);
+            const initialData = storedData !== null ? storedData : defaultSaveData;
+            dataInput.value = initialData;
+            undoStack = [initialData];
+            redoStack = [];
+            updateUndoRedoButtons();
 
-            const parsed = parseSaveData(savedData);
+            const parsed = parseSaveData(initialData);
             rootNodes = parsed.roots;
             flatItems = parsed.items;
 
+            updateAppClipboardUI();
+            updateCopyLinkModeUI();
             render();
-            await refreshMicPermissionState();
-            updateDictationUI();
 
-            // Resume Dictation Mode if it was left ON before reload (without ambushing with a prompt)
-            if (isDictationOn) {
-                if (canAutoRestartWithoutPrompt()) {
-                    startDictation({ isAutoRestart: true });
-                } else {
-                    pendingGestureResume = true;
-                    updateDictationUI();
-                }
+            if (!isMobileDevice) {
+                searchInput.focus();
             }
 
-            // Focus search input on desktop load
-            if (window.innerWidth >= 768) {
-                searchInput.focus();
+            if (isDictationOn) {
+                await refreshMicPermissionState();
+                startDictation(false);
+            } else {
+                updateDictationUI('off');
             }
         });
     </script>

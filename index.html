@@ -520,6 +520,12 @@
         let finalHandledInSession = false;
         let lastProcessedTranscript = '';
         let lastProcessedTime = 0;
+        let pausedForBackgroundBlock = false;
+        let keepAliveStream = null;
+        let keepAliveDisabledByAudioConflict = false;
+        let dictationWatchdogWorker = null;
+        let dictationWatchdogInterval = null;
+        let consecutiveStartFailures = 0;
 
         // =========================================================================
         // CORE UTILITIES (HTML Escaping, URL Formatting, Tree Paths, Toasts)
@@ -1591,6 +1597,7 @@
 
         function updateDictationUI(state = 'off', statusMsg = '') {
             if (!isDictationOn || state === 'off') {
+                document.title = 'Quick Launcher';
                 dictationBtn.classList.remove('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400', 'mic-active-pulse');
                 dictationBtn.classList.add('text-slate-500', 'dark:text-slate-400');
                 dictationStatusBar.classList.add('hidden');
@@ -1604,16 +1611,19 @@
             dictationBtn.classList.add('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400');
 
             if (state === 'listening') {
+                document.title = '🎙️ Listening • Quick Launcher';
                 dictationBtn.classList.add('mic-active-pulse');
                 dictationDot.className = 'w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0';
                 dictationResumeBtn.classList.add('hidden');
-                dictationStatusText.textContent = statusMsg || 'Listening — say "Open", "Navigation", "Go to", "Copy", or "Copy Copy"';
+                dictationStatusText.textContent = statusMsg || 'Listening (stays active in other tabs) — say "Open", "Navigation", "Go to", "Copy", or "Copy Copy"';
             } else if (state === 'paused') {
+                document.title = 'Quick Launcher';
                 dictationBtn.classList.remove('mic-active-pulse');
                 dictationDot.className = 'w-2 h-2 rounded-full bg-amber-500 shrink-0';
                 dictationResumeBtn.classList.remove('hidden');
-                dictationStatusText.textContent = statusMsg || 'Dictation paused to avoid repeat permission prompts';
+                dictationStatusText.textContent = statusMsg || 'Dictation paused — tap Resume Mic to continue';
             } else if (state === 'error') {
+                document.title = 'Quick Launcher';
                 dictationBtn.classList.remove('mic-active-pulse');
                 dictationDot.className = 'w-2 h-2 rounded-full bg-slate-400 shrink-0';
                 dictationResumeBtn.classList.remove('hidden');
@@ -1767,19 +1777,95 @@
         }
 
         function canAutoRestartSafely() {
-            if (!isDictationOn || document.hidden) return false;
-            if (isFileProtocol && micPermissionState !== 'granted') return false;
+            if (!isDictationOn) return false;
+            if (micPermissionState === 'denied') return false;
+            if (pausedForBackgroundBlock) return false;
             if (repromptDetected) return false;
             return true;
         }
 
+        // Keeps a silent active mic capture on desktop HTTPS/localhost so browsers do not freeze/throttle this tab in the background
+        async function ensureKeepAliveMicStream() {
+            if (keepAliveStream || keepAliveDisabledByAudioConflict) return;
+            if (isMobileDevice || isFileProtocol) return;
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+
+            await refreshMicPermissionState();
+            if (micPermissionState !== 'granted') return;
+
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                if (!isDictationOn) {
+                    stream.getTracks().forEach(t => t.stop());
+                    return;
+                }
+                keepAliveStream = stream;
+            } catch (e) {
+                keepAliveDisabledByAudioConflict = true;
+            }
+        }
+
+        function stopKeepAliveMicStream() {
+            if (keepAliveStream) {
+                try {
+                    keepAliveStream.getTracks().forEach(track => track.stop());
+                } catch (e) {}
+                keepAliveStream = null;
+            }
+        }
+
+        // Background-resistant Web Worker heartbeat to revive SpeechRecognition if the browser silently ends it
+        function startDictationWatchdog() {
+            if (dictationWatchdogWorker || dictationWatchdogInterval) return;
+
+            const handleWatchdogTick = () => {
+                if (
+                    isDictationOn &&
+                    !isRecognitionRunning &&
+                    !isStartingRecognition &&
+                    !dictationRestartTimeout &&
+                    canAutoRestartSafely()
+                ) {
+                    startDictation(false);
+                }
+            };
+
+            try {
+                const workerCode = `setInterval(() => postMessage('tick'), 2500);`;
+                const blob = new Blob([workerCode], { type: 'application/javascript' });
+                const workerUrl = URL.createObjectURL(blob);
+                dictationWatchdogWorker = new Worker(workerUrl);
+                URL.revokeObjectURL(workerUrl);
+                dictationWatchdogWorker.onmessage = handleWatchdogTick;
+            } catch (e) {
+                dictationWatchdogWorker = null;
+                dictationWatchdogInterval = setInterval(handleWatchdogTick, 2500);
+            }
+        }
+
+        function stopDictationWatchdog() {
+            if (dictationWatchdogWorker) {
+                try {
+                    dictationWatchdogWorker.terminate();
+                } catch (e) {}
+                dictationWatchdogWorker = null;
+            }
+            if (dictationWatchdogInterval) {
+                clearInterval(dictationWatchdogInterval);
+                dictationWatchdogInterval = null;
+            }
+        }
+
         function stopDictation(turnOffPreference = false) {
             clearTimeout(dictationRestartTimeout);
+            dictationRestartTimeout = null;
             clearTimeout(mobileInterimTimer);
             clearDictationWait();
 
             if (turnOffPreference) {
                 isDictationOn = false;
+                stopDictationWatchdog();
+                stopKeepAliveMicStream();
                 try {
                     localStorage.setItem(STORAGE_KEYS.DICTATION, 'false');
                 } catch (e) {}
@@ -1802,6 +1888,8 @@
             if (turnOffPreference) {
                 dictationPausedToAvoidPrompt = false;
                 pausedForVisibility = false;
+                pausedForBackgroundBlock = false;
+                consecutiveStartFailures = 0;
                 updateDictationUI('off');
             }
         }
@@ -1814,10 +1902,6 @@
             }
 
             if (isRecognitionRunning || isStartingRecognition) return;
-            if (document.hidden) {
-                pausedForVisibility = true;
-                return;
-            }
 
             await refreshMicPermissionState();
 
@@ -1829,12 +1913,21 @@
                 return;
             }
 
+            if (isManualTrigger) {
+                pausedForBackgroundBlock = false;
+                repromptDetected = false;
+                consecutiveStartFailures = 0;
+            }
+
+            startDictationWatchdog();
+
             // Dismiss mobile virtual keyboard so iOS/Android microphone audio session activates cleanly
             if (isMobileDevice && document.activeElement === searchInput) {
                 searchInput.blur();
             }
 
             clearTimeout(dictationRestartTimeout);
+            dictationRestartTimeout = null;
             clearTimeout(mobileInterimTimer);
             pendingMobileInterim = '';
             finalHandledInSession = false;
@@ -1857,14 +1950,17 @@
                 hasStartedOnceThisSession = true;
                 dictationPausedToAvoidPrompt = false;
                 pausedForVisibility = false;
+                pausedForBackgroundBlock = false;
+                consecutiveStartFailures = 0;
 
-                // If an automatic restart took unusually long, browser likely re-prompted user
+                // Only detect file:// re-prompts in the foreground so background throttling never causes false pauses
                 const elapsed = Date.now() - recognitionStartAttemptTime;
-                if (isAutoRestartAttempt && elapsed > 1800 && micPermissionState !== 'granted') {
+                if (!document.hidden && isFileProtocol && isAutoRestartAttempt && elapsed > 1800 && micPermissionState !== 'granted') {
                     repromptDetected = true;
                 }
 
                 updateDictationUI('listening');
+                ensureKeepAliveMicStream();
             };
 
             recognition.onresult = (event) => {
@@ -1910,21 +2006,40 @@
                 const err = event.error;
 
                 if (err === 'not-allowed' || err === 'service-not-allowed') {
+                    // If the browser refused a restart solely because this tab is in the background, auto-resume on return
+                    if (document.hidden && hasStartedOnceThisSession) {
+                        pausedForBackgroundBlock = true;
+                        updateDictationUI('paused', 'Browser paused mic in background — will auto-resume');
+                        return;
+                    }
+
                     micPermissionState = 'denied';
                     dictationPausedToAvoidPrompt = true;
+                    stopKeepAliveMicStream();
                     updateDictationUI('error', isIOS
                         ? 'Mic blocked — enable Safari Mic & Keyboard Dictation in iOS Settings'
                         : 'Microphone permission denied — allow mic access and tap Resume Mic');
                     return;
                 }
 
-                if (err === 'no-speech' || err === 'aborted') {
-                    // Handled gracefully in onend
+                if (err === 'audio-capture') {
+                    // Release keep-alive stream if the OS audio driver disallows sharing the mic
+                    if (keepAliveStream) {
+                        keepAliveDisabledByAudioConflict = true;
+                        stopKeepAliveMicStream();
+                    }
+                    consecutiveStartFailures++;
                     return;
                 }
 
-                if (err === 'audio-capture') {
-                    updateDictationUI('error', 'No microphone detected — tap Resume Mic to retry');
+                if (err === 'network') {
+                    consecutiveStartFailures++;
+                    return;
+                }
+
+                if (err === 'no-speech' || err === 'aborted') {
+                    // Handled gracefully in onend so listening continues uninterrupted
+                    return;
                 }
             };
 
@@ -1946,22 +2061,21 @@
                     return;
                 }
 
-                if (document.hidden) {
-                    pausedForVisibility = true;
-                    updateDictationUI('paused', 'Paused while tab is in background');
-                    return;
-                }
-
-                if (micPermissionState === 'denied') {
+                if (micPermissionState === 'denied' || pausedForBackgroundBlock) {
                     return;
                 }
 
                 if (canAutoRestartSafely()) {
+                    const retryDelay = isMobileDevice
+                        ? 350
+                        : (consecutiveStartFailures > 0 ? Math.min(4000, 400 * consecutiveStartFailures) : 150);
+
                     dictationRestartTimeout = setTimeout(() => {
-                        if (isDictationOn && !document.hidden && !isRecognitionRunning) {
+                        dictationRestartTimeout = null;
+                        if (isDictationOn && !isRecognitionRunning && !isStartingRecognition && canAutoRestartSafely()) {
                             startDictation(false);
                         }
-                    }, isMobileDevice ? 380 : 250);
+                    }, retryDelay);
                 } else {
                     dictationPausedToAvoidPrompt = true;
                     updateDictationUI('paused', 'Paused to avoid repeat permission prompts');
@@ -1973,7 +2087,19 @@
             } catch (e) {
                 isStartingRecognition = false;
                 isRecognitionRunning = false;
-                updateDictationUI('error', 'Could not start mic — tap Resume Mic');
+                consecutiveStartFailures++;
+
+                if (canAutoRestartSafely()) {
+                    const retryDelay = Math.min(4000, 500 * consecutiveStartFailures);
+                    dictationRestartTimeout = setTimeout(() => {
+                        dictationRestartTimeout = null;
+                        if (isDictationOn && !isRecognitionRunning && !isStartingRecognition && canAutoRestartSafely()) {
+                            startDictation(false);
+                        }
+                    }, retryDelay);
+                } else {
+                    updateDictationUI('error', 'Could not start mic — tap Resume Mic');
+                }
             }
         }
 
@@ -2020,6 +2146,8 @@
         dictationResumeBtn.addEventListener('click', () => {
             repromptDetected = false;
             dictationPausedToAvoidPrompt = false;
+            pausedForBackgroundBlock = false;
+            consecutiveStartFailures = 0;
             startDictation(true);
         });
 
@@ -2096,6 +2224,8 @@
         pasteDataBtn.addEventListener('click', pasteSaveData);
 
         window.addEventListener('beforeunload', () => {
+            stopDictationWatchdog();
+            stopKeepAliveMicStream();
             try {
                 localStorage.setItem(STORAGE_KEYS.DATA, dataInput.value);
             } catch (e) {}
@@ -2149,25 +2279,22 @@
 
         window.addEventListener('focus', () => {
             focusSearchOnTabReturn();
-            if (isDictationOn && pausedForVisibility && canAutoRestartSafely()) {
-                startDictation(false);
+            if (isDictationOn && !isRecognitionRunning && !isStartingRecognition) {
+                pausedForBackgroundBlock = false;
+                if (canAutoRestartSafely()) {
+                    startDictation(false);
+                }
             }
         });
 
         document.addEventListener('visibilitychange', () => {
-            if (document.hidden) {
-                if (isRecognitionRunning) {
-                    pausedForVisibility = true;
-                    stopDictation(false);
-                    updateDictationUI('paused', 'Paused while tab is in background');
-                }
-            } else {
+            if (!document.hidden) {
                 focusSearchOnTabReturn();
-                if (isDictationOn && pausedForVisibility) {
+                // If the browser itself interrupted background mic capture, resume immediately on return
+                if (isDictationOn && !isRecognitionRunning && !isStartingRecognition) {
+                    pausedForBackgroundBlock = false;
                     if (canAutoRestartSafely()) {
                         startDictation(false);
-                    } else {
-                        updateDictationUI('paused', 'Tap Resume Mic to continue listening');
                     }
                 }
             }

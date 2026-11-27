@@ -146,7 +146,7 @@
                     <button
                         id="dictationBtn"
                         type="button"
-                        title="Toggle Dictation Mode ('Open', 'Navigation', 'Go to', 'Copy', 'Copy Copy')"
+                        title="Toggle Dictation Mode ('Open', 'Search', 'YouTube Search', 'GPT Search', 'Copy', plus '... Start / Stop')"
                         aria-label="Toggle Dictation Mode"
                         class="min-w-[36px] min-h-[36px] sm:min-w-[40px] sm:min-h-[40px] p-1.5 sm:p-2 rounded-xl text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white hover:bg-slate-100 dark:hover:bg-slate-800 active:scale-95 transition-all flex items-center justify-center relative"
                     >
@@ -219,10 +219,17 @@
             <div id="dictationStatusBar" class="hidden mt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 sm:gap-2 px-3.5 py-2 rounded-xl bg-rose-50 dark:bg-rose-500/10 border border-rose-200 dark:border-rose-500/25 text-xs text-rose-700 dark:text-rose-200">
                 <div class="flex items-center gap-2 min-w-0">
                     <span id="dictationDot" class="w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0"></span>
-                    <span id="dictationStatusText" class="truncate">Listening — say "Open", "Copy", or "Copy Copy"</span>
+                    <span id="dictationStatusText" class="truncate">Listening — say "Open", "Search", "YouTube Search", "GPT Search", or "Copy"</span>
                 </div>
                 <div class="flex items-center justify-between sm:justify-end gap-2 shrink-0">
                     <span id="dictationTranscript" class="text-slate-600 dark:text-slate-300 italic truncate max-w-[220px] sm:max-w-[200px]"></span>
+                    <button
+                        id="dictationFinishHoldBtn"
+                        type="button"
+                        class="hidden px-2.5 py-1 rounded-lg bg-rose-600 hover:bg-rose-500 active:scale-95 text-white font-medium text-xs transition-all shrink-0"
+                    >
+                        Stop &amp; Run
+                    </button>
                     <button
                         id="dictationResumeBtn"
                         type="button"
@@ -444,6 +451,7 @@
         const dictationDot = document.getElementById('dictationDot');
         const dictationStatusText = document.getElementById('dictationStatusText');
         const dictationTranscript = document.getElementById('dictationTranscript');
+        const dictationFinishHoldBtn = document.getElementById('dictationFinishHoldBtn');
         const dictationResumeBtn = document.getElementById('dictationResumeBtn');
         const focusResultsDropdown = document.getElementById('focusResultsDropdown');
         const historySection = document.getElementById('historySection');
@@ -512,6 +520,8 @@
         let pausedForVisibility = false;
         let dictationWaitingMode = null;
         let dictationWaitTimeout = null;
+        let dictationHoldMode = null;
+        let dictationHoldBuffer = [];
         let dictationRestartTimeout = null;
         let recognitionStartAttemptTime = 0;
         let isAutoRestartAttempt = false;
@@ -1601,6 +1611,7 @@
                 dictationBtn.classList.remove('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400', 'mic-active-pulse');
                 dictationBtn.classList.add('text-slate-500', 'dark:text-slate-400');
                 dictationStatusBar.classList.add('hidden');
+                dictationFinishHoldBtn.classList.add('hidden');
                 dictationResumeBtn.classList.add('hidden');
                 dictationTranscript.textContent = '';
                 return;
@@ -1610,26 +1621,75 @@
             dictationBtn.classList.remove('text-slate-500', 'dark:text-slate-400');
             dictationBtn.classList.add('bg-rose-500/20', 'text-rose-600', 'dark:text-rose-400');
 
-            if (state === 'listening') {
+            if (state === 'holding' || dictationHoldMode) {
+                const cfg = HOLD_CONFIGS[dictationHoldMode];
+                document.title = `🔴 Recording ${cfg ? cfg.label : ''} • Quick Launcher`;
+                dictationBtn.classList.add('mic-active-pulse');
+                dictationDot.className = 'w-2 h-2 rounded-full bg-rose-500 animate-ping shrink-0';
+                dictationResumeBtn.classList.add('hidden');
+                dictationFinishHoldBtn.classList.remove('hidden');
+                dictationStatusText.textContent = statusMsg || `Recording ${cfg ? cfg.label : ''} — say "${cfg ? cfg.stopLabel : 'Stop'}" to finish`;
+            } else if (state === 'listening') {
                 document.title = '🎙️ Listening • Quick Launcher';
                 dictationBtn.classList.add('mic-active-pulse');
                 dictationDot.className = 'w-2 h-2 rounded-full bg-rose-500 animate-pulse shrink-0';
+                dictationFinishHoldBtn.classList.add('hidden');
                 dictationResumeBtn.classList.add('hidden');
-                dictationStatusText.textContent = statusMsg || 'Listening (stays active in other tabs) — say "Open", "Navigation", "Go to", "Copy", or "Copy Copy"';
+                dictationStatusText.textContent = statusMsg || 'Listening — say "Open", "Search", "YouTube Search", "GPT Search", "Copy", or "... Start / Stop"';
             } else if (state === 'paused') {
                 document.title = 'Quick Launcher';
                 dictationBtn.classList.remove('mic-active-pulse');
                 dictationDot.className = 'w-2 h-2 rounded-full bg-amber-500 shrink-0';
+                dictationFinishHoldBtn.classList.add('hidden');
                 dictationResumeBtn.classList.remove('hidden');
                 dictationStatusText.textContent = statusMsg || 'Dictation paused — tap Resume Mic to continue';
             } else if (state === 'error') {
                 document.title = 'Quick Launcher';
                 dictationBtn.classList.remove('mic-active-pulse');
                 dictationDot.className = 'w-2 h-2 rounded-full bg-slate-400 shrink-0';
+                dictationFinishHoldBtn.classList.add('hidden');
                 dictationResumeBtn.classList.remove('hidden');
                 dictationStatusText.textContent = statusMsg || 'Tap Resume Mic to start listening';
             }
         }
+
+        // Configuration for continuous "... Start" / "... Stop" hold modes
+        const HOLD_CONFIGS = {
+            copy: {
+                label: 'Copy',
+                stopLabel: 'Copy Stop',
+                stopRegex: /\bcopy[\s,.;:!?-]+stop\b/i
+            },
+            search: {
+                label: 'Google Search',
+                stopLabel: 'Search Stop',
+                stopRegex: /\b(?:google[\s,.;:!?-]+)?search[\s,.;:!?-]+stop\b/i
+            },
+            youtube_search: {
+                label: 'YouTube Search',
+                stopLabel: 'YouTube Search Stop',
+                stopRegex: /\byoutube[\s,.;:!?-]+search[\s,.;:!?-]+stop\b/i
+            },
+            gpt_search: {
+                label: 'ChatGPT Search',
+                stopLabel: 'GPT Search Stop',
+                stopRegex: /\b(?:chat[\s,.;:!?-]*)?g[\s.]*p[\s.]*t[\s,.;:!?-]+search[\s,.;:!?-]+stop\b/i
+            }
+        };
+
+        // Ordered voice command definitions (most specific first for tie-breaking at equal positions)
+        const DICTATION_COMMANDS = [
+            { type: 'hold_start', mode: 'youtube_search', regex: /\byoutube[\s,.;:!?-]+search[\s,.;:!?-]+start\b/i },
+            { type: 'hold_start', mode: 'gpt_search', regex: /\b(?:chat[\s,.;:!?-]*)?g[\s.]*p[\s.]*t[\s,.;:!?-]+search[\s,.;:!?-]+start\b/i },
+            { type: 'hold_start', mode: 'search', regex: /\b(?:google[\s,.;:!?-]+)?search[\s,.;:!?-]+start\b/i },
+            { type: 'hold_start', mode: 'copy', regex: /\bcopy[\s,.;:!?-]+start\b/i },
+            { type: 'copy_copy', regex: /\bcopy[\s,.;:!?-]+copy\b/i },
+            { type: 'copy', regex: /\bcopy\b/i },
+            { type: 'youtube_search', regex: /\byoutube[\s,.;:!?-]+search\b/i },
+            { type: 'gpt_search', regex: /\b(?:chat[\s,.;:!?-]*)?g[\s.]*p[\s.]*t[\s,.;:!?-]+search\b/i },
+            { type: 'search', regex: /\b(?:google[\s,.;:!?-]+)?search\b/i },
+            { type: 'open', regex: /\b(?:open|navigation|go[\s,.;:!?-]+to)\b/i }
+        ];
 
         function clearDictationWait() {
             dictationWaitingMode = null;
@@ -1637,13 +1697,21 @@
             dictationWaitTimeout = null;
         }
 
+        function clearDictationHold() {
+            dictationHoldMode = null;
+            dictationHoldBuffer = [];
+        }
+
         function setDictationWaiting(mode) {
             clearDictationWait();
             dictationWaitingMode = mode;
             const labels = {
                 open: 'Heard trigger — say what to open...',
-                copy: 'Heard "Copy" — say what to add to App Clipboard...',
-                copy_copy: 'Heard "Copy Copy" — say what to add & copy...'
+                copy: 'Heard "Copy" — say what to copy...',
+                copy_copy: 'Heard "Copy Copy" — say what to copy...',
+                search: 'Heard "Search" — say what to search on Google...',
+                youtube_search: 'Heard "YouTube Search" — say what to search on YouTube...',
+                gpt_search: 'Heard "GPT Search" — say what to ask ChatGPT...'
             };
             updateDictationUI('listening', labels[mode] || 'Listening for command...');
 
@@ -1654,9 +1722,71 @@
                 }
                 clearDictationWait();
                 if (isDictationOn && isRecognitionRunning) {
-                    updateDictationUI('listening');
+                    updateDictationUI(dictationHoldMode ? 'holding' : 'listening');
                 }
-            }, 3500);
+            }, 4000);
+        }
+
+        function startDictationHold(mode, initialChunk = '') {
+            clearDictationWait();
+            dictationHoldMode = mode;
+            dictationHoldBuffer = [];
+            const cfg = HOLD_CONFIGS[mode];
+            dictationTranscript.textContent = '';
+            updateDictationUI('holding');
+            showToast(`🔴 Recording ${cfg.label} — say "${cfg.stopLabel}" when done`, 2800);
+
+            if (initialChunk) {
+                appendDictationHoldChunk(initialChunk);
+            }
+        }
+
+        function appendDictationHoldChunk(chunk) {
+            if (!dictationHoldMode) return;
+            const cfg = HOLD_CONFIGS[dictationHoldMode];
+            const stopMatch = chunk.match(cfg.stopRegex);
+
+            if (stopMatch) {
+                const beforeStop = chunk.slice(0, stopMatch.index).replace(/[\s,.;:!?-]+$/, '').trim();
+                if (beforeStop) {
+                    dictationHoldBuffer.push(beforeStop);
+                }
+                finishDictationHold();
+                return;
+            }
+
+            const cleanedChunk = chunk.trim();
+            if (cleanedChunk) {
+                dictationHoldBuffer.push(cleanedChunk);
+                const preview = dictationHoldBuffer.join(' ');
+                dictationTranscript.textContent = `"${preview}"`;
+            }
+            updateDictationUI('holding');
+        }
+
+        async function finishDictationHold() {
+            if (!dictationHoldMode) return;
+            const mode = dictationHoldMode;
+            const cfg = HOLD_CONFIGS[mode];
+            const combined = dictationHoldBuffer.join(' ').trim();
+
+            clearDictationHold();
+            dictationTranscript.textContent = combined ? `"${combined}"` : '';
+
+            if (isDictationOn && isRecognitionRunning) {
+                updateDictationUI('listening');
+            }
+
+            if (!combined) {
+                showToast(`🎙️ Stopped ${cfg.label} (nothing captured)`);
+                return;
+            }
+
+            if (mode === 'copy') {
+                await executeDictationCopy(combined, true, true);
+            } else {
+                executeDictationSearch(mode, combined);
+            }
         }
 
         function executeDictationOpen(query) {
@@ -1677,7 +1807,34 @@
             }
         }
 
-        async function executeDictationCopy(query, alsoCopyToSystem = false) {
+        function executeDictationSearch(engine, query) {
+            const cleaned = (query || '').trim();
+            if (!cleaned) return;
+
+            let url = '';
+            let label = '';
+            let tag = 'search';
+
+            if (engine === 'youtube_search') {
+                url = `https://www.youtube.com/results?search_query=${encodeURIComponent(cleaned)}`;
+                label = `YouTube: ${cleaned}`;
+                tag = 'youtube';
+            } else if (engine === 'gpt_search') {
+                url = `https://chatgpt.com/?q=${encodeURIComponent(cleaned)}`;
+                label = `ChatGPT: ${cleaned}`;
+                tag = 'gpt';
+            } else {
+                url = `https://www.google.com/search?q=${encodeURIComponent(cleaned)}`;
+                label = `Google: ${cleaned}`;
+                tag = 'search';
+            }
+
+            const shortLabel = label.length > 46 ? label.slice(0, 46) + '…' : label;
+            showToast(`🎙️ Searching ${escapeHtml(shortLabel)}`);
+            openLink(url, { title: label, tag });
+        }
+
+        async function executeDictationCopy(query, alsoCopyToSystem = true, preferRawText = false) {
             const cleaned = (query || '').trim();
             if (!cleaned) {
                 if (alsoCopyToSystem) {
@@ -1686,7 +1843,7 @@
                 return;
             }
 
-            const match = findBestLinkMatch(cleaned);
+            const match = preferRawText ? null : findBestLinkMatch(cleaned);
             let valueToStore = cleaned;
             let titleToStore = '';
 
@@ -1706,6 +1863,23 @@
             }
         }
 
+        function findEarliestDictationCommand(rawText) {
+            let best = null;
+            for (const cmd of DICTATION_COMMANDS) {
+                const match = rawText.match(cmd.regex);
+                if (!match) continue;
+                // Earliest starting index wins; DICTATION_COMMANDS ordering breaks ties in favor of longer/more specific triggers
+                if (!best || match.index < best.index) {
+                    best = {
+                        cmd,
+                        index: match.index,
+                        endIndex: match.index + match[0].length
+                    };
+                }
+            }
+            return best;
+        }
+
         function processDictationTranscript(rawTranscript) {
             const cleaned = (rawTranscript || '').trim();
             if (!cleaned) return;
@@ -1715,11 +1889,17 @@
 
             // Prevent duplicate firing from overlapping interim/final mobile results
             const now = Date.now();
-            if (normalized === lastProcessedTranscript && (now - lastProcessedTime) < 1600) {
+            if (normalized === lastProcessedTranscript && (now - lastProcessedTime) < 1400) {
                 return;
             }
             lastProcessedTranscript = normalized;
             lastProcessedTime = now;
+
+            // If currently holding/recording for a "... Start" command, buffer until matching "... Stop"
+            if (dictationHoldMode) {
+                appendDictationHoldChunk(cleaned);
+                return;
+            }
 
             dictationTranscript.textContent = `"${cleaned}"`;
 
@@ -1728,47 +1908,61 @@
                 const mode = dictationWaitingMode;
                 clearDictationWait();
                 if (mode === 'open') {
-                    executeDictationOpen(normalized);
-                } else if (mode === 'copy') {
-                    executeDictationCopy(normalized, false);
-                } else if (mode === 'copy_copy') {
-                    executeDictationCopy(normalized, true);
+                    executeDictationOpen(cleaned);
+                } else if (mode === 'copy' || mode === 'copy_copy') {
+                    executeDictationCopy(cleaned, true, false);
+                } else if (mode === 'search' || mode === 'youtube_search' || mode === 'gpt_search') {
+                    executeDictationSearch(mode, cleaned);
                 }
                 if (isDictationOn && isRecognitionRunning) {
-                    updateDictationUI('listening');
+                    updateDictationUI(dictationHoldMode ? 'holding' : 'listening');
                 }
                 return;
             }
 
-            // 1. Check "copy copy" first (so "copy" doesn't swallow it)
-            const copyCopyMatch = normalized.match(/\bcopy\s+copy(?:\s+(.*))?$/i);
-            if (copyCopyMatch) {
-                const remainder = (copyCopyMatch[1] || '').trim();
-                if (remainder.length > 0) {
-                    executeDictationCopy(remainder, true);
+            // Detect the earliest spoken voice command in the utterance
+            const found = findEarliestDictationCommand(cleaned);
+            if (!found) return;
+
+            const remainder = cleaned.slice(found.endIndex).replace(/^[\s,.;:!?-]+/, '').trim();
+            const remainderHasContent = remainder.replace(/[.,!?;:\s]+/g, '').length > 0;
+            const { type, mode } = found.cmd;
+
+            if (type === 'hold_start') {
+                startDictationHold(mode, remainderHasContent ? remainder : '');
+                return;
+            }
+
+            if (type === 'copy_copy') {
+                if (remainderHasContent) {
+                    executeDictationCopy(remainder, true, false);
                 } else {
                     copyFromAppClipboard('🎙️');
                 }
                 return;
             }
 
-            // 2. Check "copy" (add to App Clipboard)
-            const copyMatch = normalized.match(/\bcopy(?:\s+(.*))?$/i);
-            if (copyMatch) {
-                const remainder = (copyMatch[1] || '').trim();
-                if (remainder.length > 0) {
-                    executeDictationCopy(remainder, false);
+            if (type === 'copy') {
+                if (remainderHasContent) {
+                    // Saying "copy" once automatically adds to App Clipboard AND copies to system clipboard
+                    executeDictationCopy(remainder, true, false);
                 } else {
                     setDictationWaiting('copy');
                 }
                 return;
             }
 
-            // 3. Check "open", "navigation", or "go to"
-            const openMatch = normalized.match(/\b(?:open|navigation|go to)(?:\s+(.*))?$/i);
-            if (openMatch) {
-                const remainder = (openMatch[1] || '').trim();
-                if (remainder.length > 0) {
+            if (type === 'search' || type === 'youtube_search' || type === 'gpt_search') {
+                if (remainderHasContent) {
+                    executeDictationSearch(type, remainder);
+                } else {
+                    setDictationWaiting(type);
+                }
+                return;
+            }
+
+            if (type === 'open') {
+                if (remainderHasContent) {
                     executeDictationOpen(remainder);
                 } else {
                     setDictationWaiting('open');
@@ -1864,6 +2058,7 @@
 
             if (turnOffPreference) {
                 isDictationOn = false;
+                clearDictationHold();
                 stopDictationWatchdog();
                 stopKeepAliveMicStream();
                 try {
@@ -1959,7 +2154,7 @@
                     repromptDetected = true;
                 }
 
-                updateDictationUI('listening');
+                updateDictationUI(dictationHoldMode ? 'holding' : 'listening');
                 ensureKeepAliveMicStream();
             };
 
@@ -1974,6 +2169,14 @@
                         finalChunk += ' ' + transcript;
                     } else {
                         interimChunk += ' ' + transcript;
+                    }
+                }
+
+                if (interimChunk.trim()) {
+                    if (dictationHoldMode && dictationHoldBuffer.length > 0) {
+                        dictationTranscript.textContent = `"${dictationHoldBuffer.join(' ')} ${interimChunk.trim()}"`;
+                    } else {
+                        dictationTranscript.textContent = interimChunk.trim();
                     }
                 }
 
@@ -2143,6 +2346,7 @@
         copyModeIndicator.addEventListener('click', toggleCopyLinkMode);
         appClipboardBtn.addEventListener('click', () => copyFromAppClipboard('📋'));
         dictationBtn.addEventListener('click', toggleDictation);
+        dictationFinishHoldBtn.addEventListener('click', finishDictationHold);
         dictationResumeBtn.addEventListener('click', () => {
             repromptDetected = false;
             dictationPausedToAvoidPrompt = false;
